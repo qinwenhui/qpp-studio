@@ -6,6 +6,7 @@ src-tauri/gen/schemas/
 
 # 打包模型与测试图片(不入库,用 tools/stage-models.mjs 生成)
 src-tauri/models-bundle/models/*/
+!src-tauri/models-bundle/models/.gitkeep
 src-tauri/models-bundle/models/*.onnx
 src-tauri/models-bundle/models/*.txt
 
