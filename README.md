@@ -17,7 +17,7 @@ Tauri v2 + Svelte 5 构建,数据不出机器。
 - **识别预设** — 速度 / 均衡 / 精度 / 监控截图(白字压栏杆等嘈杂背景专用)
 - **五套主题** — 深色科技 / 浅色精致 / 通透玻璃 / 可爱粉彩 / 古典纸墨
 - **历史记录** — 200 条持久化,随时重开
-- **小体积** — 主程序约 11MB;带 Tiny+Small 的安装包 34MB
+- **小体积** — 主程序约 11MB;模型外置,按需选用
 
 ## 界面截图
 
@@ -51,16 +51,29 @@ Tauri v2 + Svelte 5 构建,数据不出机器。
 ```bash
 # 前置:Node ≥ 20、Rust ≥ 1.85
 npm install
-node tools/stage-models.mjs --slim   # 装配打包模型(从 qppocr 仓库拉取)
+# 可选:本地有 qppocr 仓库时可装配模型进安装包(并排放置即可)
+# node tools/stage-models.mjs --slim
 npm run tauri dev        # 开发调试
 npm run tauri build      # 出安装包
 ```
 
 CI 会自动检查每次提交;打 tag(如 `v0.1.0`)即自动构建并发布 Windows 安装包到 Releases。
 
-模型文件:安装包自带 Tiny + Small;Medium 档从
-[PaddleOCR 官方](https://github.com/PaddlePaddle/PaddleOCR)下载后放入安装目录的
-`models/medium/` 即可(需 `det.onnx`、`rec.onnx`)。
+### 模型文件
+
+应用**不含模型**,首次使用前需获取:
+
+| 档位 | 文件 | 放置位置 |
+|---|---|---|
+| Tiny(推荐) | `det.onnx` + `rec.onnx` + `dict.txt` | `models/tiny/` |
+| Small | `det.onnx` + `rec.onnx` + `dict.txt` | `models/small/` |
+| Medium | `det.onnx` + `rec.onnx` + `dict.txt` | `models/medium/` |
+| 方向分类(可选) | `cls.onnx` | `models/cls.onnx` |
+
+模型来自 [PaddleOCR 官方发布](https://github.com/PaddlePaddle/PaddleOCR),
+下载 PP-OCRv6 对应档位的 det/rec 模型并按上述目录放置即可。
+也可以从本仓库的 [Releases](https://github.com/qinwenhui/qpp-studio/releases)
+下载模型包(解压到安装目录)。
 
 ## 界面一览
 
