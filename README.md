@@ -17,7 +17,7 @@ Tauri v2 + Svelte 5 构建,数据不出机器。
 - **识别预设** — 速度 / 均衡 / 精度 / 监控截图(白字压栏杆等嘈杂背景专用)
 - **五套主题** — 深色科技 / 浅色精致 / 通透玻璃 / 可爱粉彩 / 古典纸墨
 - **历史记录** — 200 条持久化,随时重开
-- **小体积** — 主程序约 11MB;模型外置,按需选用
+- **小体积** — 主程序约 11MB;内置 Tiny 模型(7MB)开箱即用,更大模型按需添加
 
 ## 界面截图
 
@@ -61,19 +61,22 @@ CI 会自动检查每次提交;打 tag(如 `v0.1.0`)即自动构建并发布 Win
 
 ### 模型文件
 
-应用**不含模型**,首次使用前需获取:
+**Tiny 档 + 方向分类模型已内置仓库**(合计约 7MB),构建出的安装包**开箱即用**。
 
-| 档位 | 文件 | 放置位置 |
-|---|---|---|
-| Tiny(推荐) | `det.onnx` + `rec.onnx` + `dict.txt` | `models/tiny/` |
-| Small | `det.onnx` + `rec.onnx` + `dict.txt` | `models/small/` |
-| Medium | `det.onnx` + `rec.onnx` + `dict.txt` | `models/medium/` |
-| 方向分类(可选) | `cls.onnx` | `models/cls.onnx` |
+如需更高精度,可自行添加 Small / Medium 档模型:
+
+| 档位 | 文件 | 放置位置(安装目录) | 说明 |
+|---|---|---|---|
+| **Tiny(内置)** | `det.onnx` + `rec.onnx` + `dict.txt` | `models/tiny/` | 最快,~60ms/张 |
+| Small(可选) | `det.onnx` + `rec.onnx` + `dict.txt` | `models/small/` | 更准,~100ms/张 |
+| Medium(可选) | `det.onnx` + `rec.onnx` + `dict.txt` | `models/medium/` | 最准,较慢 |
+| **方向分类(内置)** | `cls.onnx` | `models/cls.onnx` | 自动翻正 180° 倒置图片 |
 
 模型来自 [PaddleOCR 官方发布](https://github.com/PaddlePaddle/PaddleOCR),
-下载 PP-OCRv6 对应档位的 det/rec 模型并按上述目录放置即可。
-也可以从本仓库的 [Releases](https://github.com/qinwenhui/qpp-studio/releases)
-下载模型包(解压到安装目录)。
+下载对应档位的 det/rec 模型并按上述目录放置即可,应用会自动识别。
+
+从源码构建时,如果本地有 [qppocr 仓库](https://github.com/qinwenhui/qppocr)
+并排放置,可运行 `node tools/stage-models.mjs` 装配全部档位的模型到安装包。
 
 ## 界面一览
 
