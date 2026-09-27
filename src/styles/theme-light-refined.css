@@ -1,0 +1,36 @@
+/**
+ * 浅色精致风 — 参考图2:暖白背景、圆角卡片、柔和阴影、右栏参数设置。
+ */
+
+[data-theme='light-refined'] {
+  --bg-app: #f5f3ee;
+  --bg-canvas: #ebe8e0;
+  --bg-panel: #fdfcfa;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgb(20 24 32 / 0.05);
+  --bg-active: rgb(20 24 32 / 0.09);
+  --bg-input: #f2efe9;
+  --border-subtle: #e2ddd2;
+  --border-strong: #cfc8b8;
+  --text-primary: #262a30;
+  --text-secondary: #6b6a62;
+  --text-faint: #a3a094;
+  --accent: #0e9270;
+  --accent-strong: #0b7a5d;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgb(14 146 112 / 0.12);
+  --accent-glow: rgb(14 146 112 / 0.28);
+  --success: #17935a;
+  --warning: #b97d10;
+  --danger: #d24a44;
+  --info: #2d6fd0;
+  --quad-low: #e05a52;
+  --quad-high: #149460;
+  --shadow-sm: 0 1px 2px rgb(60 52 30 / 0.08);
+  --shadow-md: 0 4px 14px rgb(60 52 30 / 0.1);
+  --shadow-lg: 0 14px 36px rgb(60 52 30 / 0.14);
+  --backdrop-blur: 0px;
+  --scrollbar-thumb: rgb(20 24 32 / 0.16);
+  --scrollbar-thumb-hover: rgb(20 24 32 / 0.26);
+  --selection-bg: rgb(14 146 112 / 0.18);
+}

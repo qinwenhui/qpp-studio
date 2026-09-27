@@ -1,0 +1,261 @@
+//! QPP Studio — 组装层。插件顺序：single-instance 必须最先注册。
+
+pub mod batch;
+pub mod clipboard;
+pub mod commands;
+pub mod dto;
+pub mod engine;
+pub mod history;
+pub mod image_util;
+pub mod hotkey;
+pub mod ingest;
+pub mod media;
+pub mod screenshot;
+pub mod selftest;
+pub mod settings;
+pub mod thumb;
+pub mod windowfx;
+pub mod worker;
+
+use settings::Settings;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Mutex, RwLock};
+use tauri::{AppHandle, Emitter, Manager};
+
+/// 各类目录（app_data / app_cache）。
+pub struct Dirs {
+    pub settings_file: PathBuf,
+    pub cache: PathBuf,
+    pub inbox: PathBuf,
+    pub thumbs: PathBuf,
+    pub shots: PathBuf,
+}
+
+/// 全局状态（Send+Sync）。
+pub struct AppCtx {
+    pub dirs: Dirs,
+    pub settings: RwLock<Settings>,
+    pub engine: engine::EngineManager,
+    pub media: media::MediaRegistry,
+    pub items: RwLock<HashMap<String, ingest::ImageItem>>,
+    /// 插入顺序（前端列表顺序）
+    pub order: RwLock<Vec<String>>,
+    pub batch: batch::BatchState,
+    pub history: history::HistoryStore,
+    pub shot: screenshot::SessionSlot,
+    pub last_shot: Mutex<Option<dto::ItemOutcomeDto>>,
+    /// 导入代数:新一次选择会作废上一次还在跑的导入(100 张全量解码耗时较长)
+    pub ingest_gen: std::sync::atomic::AtomicU64,
+}
+
+impl AppCtx {
+    pub fn register_item(&self, item: ingest::ImageItem) {
+        let id = item.id.clone();
+        self.items.write().unwrap().insert(id.clone(), item);
+        self.order.write().unwrap().push(id);
+    }
+
+    pub fn item_dto(&self, id: &str) -> Option<dto::ImageItemDto> {
+        let item = self.items.read().unwrap().get(id).cloned()?;
+        Some(dto::ImageItemDto {
+            id: item.id,
+            name: item.name,
+            path: item.path.to_string_lossy().into_owned(),
+            w: item.w,
+            h: item.h,
+            origin: item.origin,
+            added_at: item.added_at,
+            media_token: item.media_token,
+            thumb_token: item.thumb_token,
+        })
+    }
+
+    pub fn remove_item(&self, id: &str) {
+        self.items.write().unwrap().remove(id);
+        self.order.write().unwrap().retain(|i| i != id);
+    }
+
+    pub fn clear_items(&self) {
+        self.items.write().unwrap().clear();
+        self.order.write().unwrap().clear();
+    }
+}
+
+/// media:// 令牌 → 前端可用 URL。Windows/WebView2 是 http://media.localhost，
+/// macOS/Linux 是 media://localhost（wry 已知行为，CSP 两种都放行）。
+pub fn media_url(token: &str) -> String {
+    if cfg!(windows) {
+        format!("http://media.localhost/{token}")
+    } else {
+        format!("media://localhost/{token}")
+    }
+}
+
+/// 模型目录解析：设置覆盖 → 资源目录（安装态）→ exe 同级（便携态）
+/// → 开发态回退并排的 qppocr 仓库。
+fn resolve_models_dir(app: &AppHandle, settings: &Settings) -> PathBuf {
+    if let Some(dir) = &settings.models_dir {
+        let p = PathBuf::from(dir);
+        if p.is_dir() {
+            return p;
+        }
+    }
+    if let Ok(res) = app
+        .path()
+        .resolve("models", tauri::path::BaseDirectory::Resource)
+    {
+        if res.is_dir() {
+            return res;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("models");
+            if p.is_dir() {
+                return p;
+            }
+        }
+    }
+    if cfg!(debug_assertions) {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../qppocr/models");
+        if p.is_dir() {
+            return p;
+        }
+    }
+    PathBuf::from("models")
+}
+
+fn bootstrap(app: AppHandle) {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .expect("app_data 目录不可用");
+    let cache_dir = app.path().app_cache_dir().expect("app_cache 目录不可用");
+    let (inbox, thumbs, shots) = (
+        cache_dir.join("inbox"),
+        cache_dir.join("thumbs"),
+        cache_dir.join("shots"),
+    );
+    for d in [&data_dir, &cache_dir, &inbox, &thumbs, &shots] {
+        let _ = std::fs::create_dir_all(d);
+    }
+
+    let settings = Settings::load(&data_dir.join("settings.json"));
+    let models_dir = resolve_models_dir(&app, &settings);
+    let threads = settings.threads;
+    let ctx = AppCtx {
+        dirs: Dirs {
+            settings_file: data_dir.join("settings.json"),
+            cache: cache_dir,
+            inbox,
+            thumbs,
+            shots,
+        },
+        engine: engine::EngineManager::new(threads, models_dir),
+        batch: batch::BatchState::new(settings.batch_concurrency),
+        history: history::HistoryStore::load(data_dir.join("history.json")),
+        media: media::MediaRegistry::default(),
+        settings: RwLock::new(settings.clone()),
+        items: RwLock::new(HashMap::new()),
+        order: RwLock::new(Vec::new()),
+        shot: Mutex::new(None),
+        last_shot: Mutex::new(None),
+        ingest_gen: std::sync::atomic::AtomicU64::new(0),
+    };
+    let tier = settings::parse_tier(&settings.tier).unwrap_or(qppocr::Tier::Tiny);
+    let preset = settings::parse_preset(&settings.preset).unwrap_or(qppocr::Preset::Balanced);
+    app.manage(ctx);
+
+    // 启动即建引擎：锁死进程级线程池尺寸
+    app.state::<AppCtx>().engine.spawn_init(
+        app.clone(),
+        engine::EngineSpec {
+            tier,
+            preset: if settings::is_special_preset(&settings.preset) {
+                qppocr::Preset::Accuracy
+            } else {
+                preset
+            },
+            orientation: settings.orientation,
+            enhance_contrast: settings.enhance_contrast,
+            upscale: settings.upscale,
+            special: settings::is_special_preset(&settings.preset),
+        },
+    );
+
+    if let Err(e) = hotkey::register(&app, &settings.hotkey) {
+        let _ = app.emit("app://toast", dto::ToastDto {
+            level: "error".into(),
+            message: e,
+        });
+    }
+    windowfx::apply_theme_effect(&app, &settings.theme);
+    history::spawn_flush_thread(app.clone());
+    let _ = app.emit("app://ready", ());
+}
+
+pub fn run() {
+    // 工作线程 panic 默认无输出,静默吞掉故障 —— 开发期打出来
+    if cfg!(debug_assertions) {
+        std::panic::set_hook(Box::new(|info| {
+            eprintln!("[panic] {info}");
+        }));
+    }
+    let selftest = std::env::var("QPP_SELFTEST").is_ok() || std::env::var("QPP_BENCH").is_ok();
+
+    tauri::Builder::default()
+        // 单实例必须最先注册：二次启动聚焦主窗口
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .register_asynchronous_uri_scheme_protocol("media", |ctx, request, responder| {
+            media::handle(ctx, request, responder)
+        })
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            bootstrap(handle.clone());
+            if selftest {
+                selftest::spawn(handle);
+            }
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::app_init,
+            commands::engine_status,
+            commands::pick_images,
+            commands::add_files,
+            commands::read_clipboard_image,
+            commands::ocr_image,
+            commands::batch_start,
+            commands::batch_cancel,
+            commands::screenshot_begin,
+            commands::screenshot_finish,
+            commands::screenshot_cancel,
+            commands::shot_window_monitor,
+            commands::shot_result_data,
+            commands::close_shot_result,
+            commands::focus_main,
+            commands::settings_get,
+            commands::settings_set,
+            commands::history_list,
+            commands::history_delete,
+            commands::history_clear,
+            commands::history_reopen,
+            commands::remove_item,
+            commands::remove_items,
+            commands::clear_items,
+            commands::export_content,
+            commands::copy_text,
+            commands::reveal_path,
+            commands::open_url,
+        ])
+        .run(tauri::generate_context!())
+        .expect("QPP Studio 启动失败");
+}

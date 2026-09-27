@@ -1,0 +1,33 @@
+# 构建产物
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# 打包模型与测试图片(不入库,用 tools/stage-models.mjs 生成)
+src-tauri/models-bundle/models/*/
+src-tauri/models-bundle/models/*.onnx
+src-tauri/models-bundle/models/*.txt
+
+# 本地开发临时物
+tools/app-icon.png
+tools/selftest-shot*.png
+tools/release-shot.png
+src-tauri/target/release/问题.png
+好的样式布局页面参考/
+*.log
+tools/.qppocr-clone/
+
+# 编辑器
+.vscode/
+.idea/
+
+# 开发过程中的参考/截图(非项目资产)
+c++那边的.png
+qppocr.png
+任务管理器.png
+报错没法复制.png
+问题.png
+好的样式布局页面参考/
+*.jpeg
+c++*.png

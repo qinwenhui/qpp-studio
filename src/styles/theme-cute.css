@@ -1,0 +1,41 @@
+/**
+ * 可爱风 — 圆润粉彩、大圆角、果冻感阴影、草莓粉主色。
+ */
+
+[data-theme='cute'] {
+  --bg-app: #fdf2f6;
+  --bg-canvas: #f9e6ef;
+  --bg-panel: #fffafc;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgb(190 74 120 / 0.06);
+  --bg-active: rgb(190 74 120 / 0.12);
+  --bg-input: #fbeef4;
+  --border-subtle: #f3d9e5;
+  --border-strong: #e9bfd2;
+  --text-primary: #4d3a45;
+  --text-secondary: #92707f;
+  --text-faint: #c2a5b2;
+  --accent: #f06292;
+  --accent-strong: #d84a7c;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgb(240 98 146 / 0.14);
+  --accent-glow: rgb(240 98 146 / 0.32);
+  --success: #55b876;
+  --warning: #e9a23b;
+  --danger: #e35d6a;
+  --info: #7e9bdb;
+  --quad-low: #e88484;
+  --quad-high: #66c28f;
+  --radius-xs: 6px;
+  --radius-sm: 9px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 26px;
+  --shadow-sm: 0 1px 3px rgb(190 74 120 / 0.1);
+  --shadow-md: 0 5px 16px rgb(190 74 120 / 0.13);
+  --shadow-lg: 0 16px 40px rgb(190 74 120 / 0.18);
+  --backdrop-blur: 0px;
+  --scrollbar-thumb: rgb(190 74 120 / 0.2);
+  --scrollbar-thumb-hover: rgb(190 74 120 / 0.3);
+  --selection-bg: rgb(240 98 146 / 0.2);
+}

@@ -1,0 +1,5 @@
+# 与 qppocr 仓库的 .cargo/config.toml 保持一致（引擎仓库级配置不传播到下游）。
+# 代价：二进制要求 AVX2+FMA（Haswell 2013+）。
+# 若需发通用版：删除本文件即可，引擎自带运行时检测会走标量路径。
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-feature=+avx2,+fma"]

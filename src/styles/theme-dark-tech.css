@@ -1,0 +1,33 @@
+/**
+ * 深色科技风 — 参考图1:近黑背景、窄图标栏、中央画布、右侧折叠面板、青绿点缀。
+ * 即 tokens.css 的默认值,此处显式声明以保持主题文件结构一致。
+ */
+
+[data-theme='dark-tech'] {
+  --bg-app: #0e1116;
+  --bg-canvas: #0a0d12;
+  --bg-panel: #131820;
+  --bg-elevated: #1a212c;
+  --bg-hover: rgb(255 255 255 / 0.05);
+  --bg-active: rgb(255 255 255 / 0.09);
+  --bg-input: #0d1219;
+  --border-subtle: #202936;
+  --border-strong: #2c3949;
+  --text-primary: #e8edf4;
+  --text-secondary: #98a5b8;
+  --text-faint: #5d6b80;
+  --accent: #2dd4a7;
+  --accent-strong: #24b98f;
+  --accent-contrast: #062018;
+  --accent-soft: rgb(45 212 167 / 0.14);
+  --accent-glow: rgb(45 212 167 / 0.35);
+  --quad-low: #f87171;
+  --quad-high: #4ade80;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.28);
+  --shadow-md: 0 4px 16px rgb(0 0 0 / 0.32);
+  --shadow-lg: 0 12px 40px rgb(0 0 0 / 0.42);
+  --backdrop-blur: 0px;
+  --scrollbar-thumb: rgb(255 255 255 / 0.14);
+  --scrollbar-thumb-hover: rgb(255 255 255 / 0.24);
+  --selection-bg: rgb(45 212 167 / 0.25);
+}

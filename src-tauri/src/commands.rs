@@ -1,0 +1,517 @@
+//! 全部 Tauri 命令。自定义命令不受 ACL 约束（插件/core 命令才走 capabilities）。
+
+use crate::dto::{
+    EngineStatusDto, ImageItemDto, InitInfoDto, ItemOutcomeDto, OcrOutcomeDto, ShotMonitorDto,
+};
+use crate::settings::{parse_preset, parse_tier, Settings};
+use crate::AppCtx;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
+
+#[tauri::command]
+pub fn app_init(app: AppHandle, state: State<AppCtx>) -> InitInfoDto {
+    InitInfoDto {
+        settings: state.settings.read().unwrap().clone(),
+        engine: state.engine.status(),
+        version: app.package_info().version.to_string(),
+        platform: std::env::consts::OS.into(),
+    }
+}
+
+#[tauri::command]
+pub fn engine_status(state: State<AppCtx>) -> EngineStatusDto {
+    state.engine.status()
+}
+
+#[tauri::command]
+pub async fn pick_images(app: AppHandle) -> Result<Vec<ImageItemDto>, String> {
+    let paths = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .add_filter("图片", &["png", "jpg", "jpeg", "bmp"])
+            .pick_files()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .unwrap_or_default();
+    ingest_paths(&app, paths).await
+}
+
+#[tauri::command]
+pub async fn add_files(app: AppHandle, paths: Vec<String>) -> Result<Vec<ImageItemDto>, String> {
+    let paths = paths.into_iter().map(PathBuf::from).collect();
+    ingest_paths(&app, paths).await
+}
+
+/// 入库含解码（缩略图要全量解码,大批量时串行极慢）:
+/// 4 线程并行 + 逐张广播进度 + 代数守卫(新一次选择作废旧导入)。
+async fn ingest_paths(app: &AppHandle, paths: Vec<PathBuf>) -> Result<Vec<ImageItemDto>, String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tauri::Emitter;
+
+    let gen_id = app
+        .state::<AppCtx>()
+        .ingest_gen
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
+    let total = paths.len();
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // (原始下标, 路径):并行处理后按下标还原选择顺序
+        let queue: std::sync::Mutex<Vec<(usize, PathBuf)>> =
+            std::sync::Mutex::new(paths.into_iter().enumerate().collect());
+        let results: std::sync::Mutex<Vec<(usize, ImageItemDto)>> =
+            std::sync::Mutex::new(Vec::new());
+        let first_err = std::sync::Mutex::new(None::<String>);
+        let done = AtomicUsize::new(0);
+        let is_stale = |g: u64| {
+            app.state::<AppCtx>().ingest_gen.load(Ordering::SeqCst) != g
+        };
+
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let app = app.clone();
+                scope.spawn(|| {
+                    let app = app;
+                    loop {
+                        if is_stale(gen_id) {
+                            return;
+                        }
+                        let next = { queue.lock().unwrap().pop() };
+                        let Some((idx, p)) = next else { return };
+                        match crate::ingest::ingest_file(&app, &p, "file") {
+                            Ok(dto) => results.lock().unwrap().push((idx, dto)),
+                            Err(e) => {
+                                *first_err.lock().unwrap() = Some(e);
+                            }
+                        }
+                        let d = done.fetch_add(1, Ordering::SeqCst) + 1;
+                        let _ = app.emit(
+                            "ingest://progress",
+                            serde_json::json!({ "done": d, "total": total }),
+                        );
+                    }
+                });
+            }
+        });
+
+        if is_stale(gen_id) {
+            // 已被更新的选择取代:静默放弃
+            return Ok(Vec::new());
+        }
+        let mut out = results.into_inner().unwrap();
+        out.sort_by_key(|(idx, _)| *idx);
+        let out: Vec<ImageItemDto> = out.into_iter().map(|(_, d)| d).collect();
+        if out.is_empty() {
+            if let Some(e) = first_err.into_inner().unwrap() {
+                return Err(e);
+            }
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn read_clipboard_image(app: AppHandle) -> Result<ImageItemDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let img = crate::clipboard::read_image()?;
+        crate::ingest::ingest_bitmap(&app, "剪贴板.png", img, "clipboard")
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 单张交互识别：直接 await 返回，同时也有事件广播。
+/// `rotation`:画布显示旋转(顺时针 90/180/270),非 0 时烘焙进送引擎的像素,
+/// 框坐标逆变换回原图系——「转正后重新识别」。
+#[tauri::command]
+pub async fn ocr_image(
+    app: AppHandle,
+    id: String,
+    rotation: Option<u32>,
+) -> Result<OcrOutcomeDto, String> {
+    let rotation = rotation.unwrap_or(0);
+    tauri::async_runtime::spawn_blocking(move || {
+        if rotation % 360 == 0 {
+            crate::batch::run_item_blocking(&app, &id)
+        } else {
+            crate::batch::run_item_rotated_blocking(&app, &id, rotation)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn batch_start(
+    app: AppHandle,
+    state: State<'_, AppCtx>,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    if state.batch.running.swap(true, Ordering::SeqCst) {
+        return Err("已有批量任务在进行中".into());
+    }
+    state.batch.cancel.store(false, Ordering::SeqCst);
+
+    // 收集 (id, path, 像素权重):批量期间条目不会被动(当前识别语义保证)
+    let mut tasks = Vec::with_capacity(ids.len());
+    {
+        let items = state.items.read().unwrap();
+        for id in &ids {
+            if let Some(item) = items.get(id) {
+                tasks.push((id.clone(), item.path.clone(), (item.w as u64) * (item.h as u64)));
+            }
+        }
+    }
+
+    // 大批量 + 档位允许 → 进程分治(每 worker 独立引擎,真正吃满核)
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8);
+    let procs = crate::batch::worker_count(state.engine.spec().tier, cores);
+    if tasks.len() >= crate::batch::PROC_BATCH_MIN && procs > 0 {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::batch::spawn_proc_batch(app, tasks);
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // 小批量:进程内共享引擎并发(并发 run 在算子层部分重叠)
+    let user_conc = state.settings.read().unwrap().batch_concurrency;
+    let conc = if user_conc == 0 {
+        // 自动:tiny 引擎轻,4 并发收益明显;small/medium 引擎重,2 为甜点
+        match state.engine.spec().tier {
+            qppocr::Tier::Tiny => 4,
+            _ => 2,
+        }
+    } else {
+        user_conc
+    };
+    let sem = Arc::new(tokio::sync::Semaphore::new(conc.max(1)));
+    *state.batch.semaphore.write().unwrap() = sem.clone();
+    let cancel = state.batch.cancel.clone();
+    let mut handles = Vec::new();
+    for id in ids {
+        let app = app.clone();
+        let sem = sem.clone();
+        let cancel = cancel.clone();
+        handles.push(tauri::async_runtime::spawn(async move {
+            let _permit = sem.acquire().await;
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let app = app.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                crate::batch::run_item_blocking(&app, &id)
+            })
+            .await;
+        }));
+    }
+    tauri::async_runtime::spawn(async move {
+        for h in handles {
+            let _ = h.await;
+        }
+        let state = app.state::<AppCtx>();
+        state.batch.running.store(false, Ordering::SeqCst);
+        let _ = app.emit("batch://done", ());
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn batch_cancel(state: State<AppCtx>) {
+    state.batch.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+// ---- 截图 ----
+
+#[tauri::command]
+pub fn screenshot_begin(app: AppHandle) {
+    crate::screenshot::begin(app);
+}
+
+#[tauri::command]
+pub fn screenshot_finish(
+    app: AppHandle,
+    mon: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> Result<(), String> {
+    crate::screenshot::finish(app, mon, x, y, w, h)
+}
+
+#[tauri::command]
+pub fn screenshot_cancel(app: AppHandle) {
+    crate::screenshot::cancel(&app);
+}
+
+/// 覆盖层页面按自己的窗口标签取所属屏幕信息。
+#[tauri::command]
+pub fn shot_window_monitor(
+    _app: AppHandle,
+    state: State<AppCtx>,
+    label: String,
+) -> Result<ShotMonitorDto, String> {
+    let index: u32 = label
+        .strip_prefix("shot-")
+        .and_then(|s| s.parse().ok())
+        .ok_or("非截图覆盖窗口")?;
+    let guard = state.shot.lock().unwrap();
+    let session = guard.as_ref().ok_or("截图会话已结束")?;
+    let m = session
+        .shots
+        .get(index as usize)
+        .ok_or("无效的显示器索引")?;
+    Ok(ShotMonitorDto {
+        url: crate::media_url(&m.token),
+        w: m.w,
+        h: m.h,
+        dpr: m.scale as f64,
+    })
+}
+
+/// 结果弹窗数据。
+#[tauri::command]
+pub fn shot_result_data(state: State<AppCtx>) -> Option<ItemOutcomeDto> {
+    state.last_shot.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn close_shot_result(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("shot-result") {
+        let _ = w.close();
+    }
+}
+
+/// 弹窗里「查看详情」：聚焦主窗口并关闭弹窗。
+#[tauri::command]
+pub fn focus_main(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+    if let Some(w) = app.get_webview_window("shot-result") {
+        let _ = w.close();
+    }
+}
+
+// ---- 设置 ----
+
+#[tauri::command]
+pub fn settings_get(state: State<AppCtx>) -> Settings {
+    state.settings.read().unwrap().clone()
+}
+
+/// 保存设置并触发副作用（热键/主题/引擎重建/批量并发）。
+/// 热键注册失败直接 Err（不持久化），前端标红提示。
+#[tauri::command]
+pub async fn settings_set(
+    app: AppHandle,
+    state: State<'_, AppCtx>,
+    settings: Settings,
+) -> Result<Settings, String> {
+    let old = state.settings.read().unwrap().clone();
+    if settings.hotkey != old.hotkey {
+        crate::hotkey::set(&app, &old.hotkey, &settings.hotkey)?;
+    }
+    let theme_changed = settings.theme != old.theme;
+    let engine_changed = settings.tier != old.tier
+        || settings.preset != old.preset
+        || settings.orientation != old.orientation
+        || settings.enhance_contrast != old.enhance_contrast
+        || settings.upscale != old.upscale;
+    let conc_changed = settings.batch_concurrency != old.batch_concurrency;
+    {
+        let mut s = state.settings.write().unwrap();
+        *s = settings.clone();
+        s.save(&state.dirs.settings_file)?;
+    }
+    if theme_changed {
+        crate::windowfx::apply_theme_effect(&app, &settings.theme);
+    }
+    if engine_changed {
+        let tier = parse_tier(&settings.tier).unwrap_or(qppocr::Tier::Tiny);
+        // 切档前体检:文件不齐就直接拒绝,不让应用进入报错态
+        crate::engine::EngineManager::tier_preflight(&state.engine.models_dir(), tier)?;
+        let spec = crate::engine::EngineSpec {
+            tier,
+            preset: if crate::settings::is_special_preset(&settings.preset) {
+                qppocr::Preset::Accuracy
+            } else {
+                parse_preset(&settings.preset).unwrap_or(qppocr::Preset::Balanced)
+            },
+            special: crate::settings::is_special_preset(&settings.preset),
+            orientation: settings.orientation,
+            enhance_contrast: settings.enhance_contrast,
+            upscale: settings.upscale,
+        };
+        state.engine.reconfigure(app.clone(), spec);
+    }
+    if conc_changed && !state.batch.running.load(std::sync::atomic::Ordering::SeqCst) {
+        *state.batch.semaphore.write().unwrap() = std::sync::Arc::new(
+            tokio::sync::Semaphore::new(settings.batch_concurrency.max(1)),
+        );
+    }
+    let _ = app.emit("settings://changed", &settings);
+    Ok(settings)
+}
+
+// ---- 历史 ----
+
+#[tauri::command]
+pub fn history_list(
+    state: State<AppCtx>,
+    offset: usize,
+    limit: usize,
+) -> Vec<crate::dto::HistoryEntryDto> {
+    let mut list = state.history.list(offset, limit);
+    // 缩略图令牌不持久化,列表时按需注册(命中缓存则零成本)
+    for e in &mut list {
+        let thumb = state.dirs.thumbs.join(format!("{}.jpg", e.id));
+        if thumb.exists() {
+            e.thumb_token = Some(state.media.register(thumb, "image/jpeg"));
+        }
+    }
+    list
+}
+
+#[tauri::command]
+pub fn history_delete(state: State<AppCtx>, id: String) {
+    state.history.delete(&id);
+}
+
+#[tauri::command]
+pub fn history_clear(state: State<AppCtx>) {
+    state.history.clear();
+}
+
+/// 历史重开：重建 media 令牌（令牌不持久化），返回条目与结果。
+#[tauri::command]
+pub async fn history_reopen(app: AppHandle, id: String) -> Result<ItemOutcomeDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppCtx>();
+        let entry = state.history.get(&id).ok_or("历史条目不存在")?;
+        let path = PathBuf::from(&entry.path);
+        if !path.is_file() {
+            return Err(format!("源文件已不存在：{}", entry.path));
+        }
+        let thumb = state.dirs.thumbs.join(format!("{id}.jpg"));
+        if !thumb.exists() {
+            // 入库已不解码,重开时按需补缩略图
+            let img = qppocr::decode_file(&path).map_err(|e| e.to_string())?;
+            crate::thumb::make_thumb_from_rgb(
+                img.w as u32,
+                img.h as u32,
+                &img.data,
+                &id,
+                &state.dirs.thumbs,
+            )?;
+        }
+        let media_token = state.media.register(path.clone(), crate::media::mime_for(&path));
+        let thumb_token = state.media.register(thumb, "image/jpeg");
+        let item = crate::ingest::ImageItem {
+            id: entry.id.clone(),
+            name: entry.name.clone(),
+            path,
+            w: entry.w,
+            h: entry.h,
+            origin: entry.origin.clone(),
+            added_at: entry.at,
+            media_token,
+            thumb_token,
+        };
+        let dto = ImageItemDto {
+            id: item.id.clone(),
+            name: item.name.clone(),
+            path: item.path.to_string_lossy().into_owned(),
+            w: item.w,
+            h: item.h,
+            origin: item.origin.clone(),
+            added_at: item.added_at,
+            media_token: item.media_token.clone(),
+            thumb_token: item.thumb_token.clone(),
+        };
+        state.register_item(item);
+        Ok(ItemOutcomeDto {
+            item: dto,
+            outcome: entry.outcome.clone(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---- 图片条目管理 ----
+
+#[tauri::command]
+pub fn remove_item(state: State<AppCtx>, id: String) {
+    state.remove_item(&id);
+}
+
+/// 批量移除:新批次替换「当前识别」时精确清掉旧条目(不碰刚 ingest 的新批次)。
+#[tauri::command]
+pub fn remove_items(state: State<AppCtx>, ids: Vec<String>) {
+    for id in ids {
+        state.remove_item(&id);
+    }
+}
+
+#[tauri::command]
+pub fn clear_items(state: State<AppCtx>) {
+    state.clear_items();
+}
+
+// ---- 导出 / 剪贴板 / 打开位置 ----
+
+/// 前端已持有文本内容，这里只负责选目标路径 + 落盘。
+#[tauri::command]
+pub async fn export_content(
+    content: String,
+    fmt: String,
+    default_name: String,
+) -> Result<String, String> {
+    let ext = if fmt == "json" { "json" } else { "txt" };
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        rfd::FileDialog::new()
+            .add_filter("文件", &[ext])
+            .set_file_name(&default_name)
+            .save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(path) = path else {
+        return Err("已取消".into());
+    };
+    std::fs::write(&path, content).map_err(|e| format!("写入失败: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn copy_text(text: String) -> Result<(), String> {
+    crate::clipboard::set_text(&text)
+}
+
+#[tauri::command]
+pub fn reveal_path(app: AppHandle, path: String) -> Result<(), String> {
+    app.opener()
+        .reveal_item_in_dir(path)
+        .map_err(|e| e.to_string())
+}
+
+/// 在系统默认浏览器打开外部链接(关于页的 GitHub/作者主页)。
+#[tauri::command]
+pub fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}

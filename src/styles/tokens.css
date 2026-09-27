@@ -1,0 +1,91 @@
+/**
+ * 设计令牌「契约」— 全部主题必须定义的变量集合(默认值 = 深色科技风)。
+ * 主题文件通过 [data-theme="..."] 覆盖。新增变量先在此登记默认值。
+ */
+
+:root {
+  /* ---- 布局常量(主题无关) ---- */
+  --rail-w: 54px;
+  --titlebar-h: 40px;
+  --toolbar-h: 46px;
+  --panel-w: 330px;
+  --thumbstrip-h: 86px;
+
+  /* ---- 形状 ---- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  /* ---- 字体 ---- */
+  --font-ui: system-ui, 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI',
+    'PingFang SC', 'Helvetica Neue', sans-serif;
+  --font-mono: 'Cascadia Code', 'JetBrains Mono', Consolas, 'SF Mono', monospace;
+
+  /* ---- 动效 ---- */
+  --speed-fast: 120ms;
+  --speed: 200ms;
+  --speed-slow: 340ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.3, 0.5, 1);
+
+  /* ---- 阴影 ---- */
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.28);
+  --shadow-md: 0 4px 16px rgb(0 0 0 / 0.32);
+  --shadow-lg: 0 12px 40px rgb(0 0 0 / 0.42);
+
+  /* ---- 毛玻璃(非 glass 主题为 0) ---- */
+  --backdrop-blur: 0px;
+  --backdrop-saturate: 1;
+
+  /* ---- 以下为语义色(主题必填) ---- */
+
+  /* 背景层级 */
+  --bg-app: #0e1116;
+  --bg-canvas: #0a0d12;
+  --bg-panel: #131820;
+  --bg-elevated: #1a212c;
+  --bg-hover: rgb(255 255 255 / 0.05);
+  --bg-active: rgb(255 255 255 / 0.09);
+  --bg-input: #0d1219;
+
+  /* 边框 */
+  --border-subtle: #202936;
+  --border-strong: #2c3949;
+  --border-focus: var(--accent);
+
+  /* 文字 */
+  --text-primary: #e8edf4;
+  --text-secondary: #98a5b8;
+  --text-faint: #5d6b80;
+
+  /* 主色(深色科技:青绿) */
+  --accent: #2dd4a7;
+  --accent-strong: #24b98f;
+  --accent-contrast: #062018;
+  --accent-soft: rgb(45 212 167 / 0.14);
+  --accent-glow: rgb(45 212 167 / 0.35);
+
+  /* 语义色 */
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --info: #60a5fa;
+
+  /* 识别框(canvas):低置信度 → 高置信度 */
+  --quad-low: #f87171;
+  --quad-high: #4ade80;
+
+  /* 窗口控制(mac 三色) */
+  --traffic-red: #ff5f57;
+  --traffic-yellow: #febc2e;
+  --traffic-green: #28c840;
+
+  /* 滚动条 */
+  --scrollbar-thumb: rgb(255 255 255 / 0.14);
+  --scrollbar-thumb-hover: rgb(255 255 255 / 0.24);
+
+  /* 选区 */
+  --selection-bg: rgb(45 212 167 / 0.25);
+}

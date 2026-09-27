@@ -1,0 +1,62 @@
+[package]
+name = "qpp-studio"
+version = "0.1.0"
+description = "QPP Studio — fast & elegant OCR powered by qppocr"
+authors = ["qinwh"]
+license = "AGPL-3.0-or-later"
+edition = "2024"
+rust-version = "1.85"
+
+# Tauri 的 lib 约定：main.rs 只调 lib::run()
+[lib]
+name = "qpp_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-global-shortcut = "2"
+
+# 引擎：crates.io 发布版
+qppocr = "0.2.1"
+
+# 截图（多屏捕获）
+xcap = "0.9"
+# 原生文件对话框。Windows 上任意线程可用；
+# 将来支持 macOS 时需改走主线程（rfd 的 macOS 限制）
+# common-controls-v6:让消息框支持自定义按钮文案("隐藏/不隐藏")
+rfd = { version = "0.15", features = ["common-controls-v6"] }
+# 剪贴板（读图 + 写文本），也避免再引入 clipboard-manager 插件
+arboard = "3"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+# 与 qppocr 共用同一版本，合并编译产物
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+# 批量并发信号量（运行时由 tauri 提供）
+tokio = { version = "1", features = ["sync"] }
+
+[profile.release]
+# 引擎内核要性能，不用 "s"/"z"
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+# 必须 unwind：引擎 SHA 校验失败会 panic，靠 catch_unwind 转 Err
+panic = "unwind"
+incremental = false
+
+# dev(tauri dev)下引擎三 crate 强制优化:手写 SIMD 内核在 debug 下慢 10-50 倍,
+# 会把 42ms 的识别拖成数秒。其余 crate 保持 debug,迭代编译速度不受影响。
+[profile.dev.package.qppocr]
+opt-level = 3
+[profile.dev.package.qppocr-core]
+opt-level = 3
+[profile.dev.package.qppocr-kernels]
+opt-level = 3
+codegen-units = 1

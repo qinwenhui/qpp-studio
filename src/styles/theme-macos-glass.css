@@ -1,0 +1,39 @@
+/**
+ * 毛玻璃 mac 风 — 参考图3:macOS 设置面板质感。
+ * 系统材质(Windows 上 Mica→Acrylic 回退)由 Rust 侧 set_effects 提供;
+ * 这里叠加 CSS 半透明面板 + backdrop-filter,画布区保持较实以保证图片可读。
+ */
+
+[data-theme='macos-glass'] {
+  --bg-app: rgb(24 26 32 / 0.42);
+  --bg-canvas: rgb(16 18 23 / 0.62);
+  --bg-panel: rgb(34 37 45 / 0.5);
+  --bg-elevated: rgb(44 48 58 / 0.72);
+  --bg-hover: rgb(255 255 255 / 0.07);
+  --bg-active: rgb(255 255 255 / 0.12);
+  --bg-input: rgb(12 14 18 / 0.45);
+  --border-subtle: rgb(255 255 255 / 0.12);
+  --border-strong: rgb(255 255 255 / 0.2);
+  --text-primary: #f2f4f8;
+  --text-secondary: #a8b0bf;
+  --text-faint: #6e7889;
+  --accent: #4ea0ff;
+  --accent-strong: #74b4ff;
+  --accent-contrast: #04121f;
+  --accent-soft: rgb(78 160 255 / 0.18);
+  --accent-glow: rgb(78 160 255 / 0.4);
+  --success: #53d68a;
+  --warning: #fbc44d;
+  --danger: #ff7a72;
+  --info: #74b4ff;
+  --quad-low: #ff8a80;
+  --quad-high: #69e09b;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.22);
+  --shadow-md: 0 6px 20px rgb(0 0 0 / 0.3);
+  --shadow-lg: 0 16px 44px rgb(0 0 0 / 0.4);
+  --backdrop-blur: 26px;
+  --backdrop-saturate: 1.5;
+  --scrollbar-thumb: rgb(255 255 255 / 0.18);
+  --scrollbar-thumb-hover: rgb(255 255 255 / 0.28);
+  --selection-bg: rgb(78 160 255 / 0.28);
+}

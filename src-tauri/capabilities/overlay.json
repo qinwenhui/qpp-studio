@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay",
+  "description": "截图覆盖层与结果弹窗：只走自定义命令，最小核心权限",
+  "windows": ["shot-*", "shot-result"],
+  "permissions": ["core:default"]
+}

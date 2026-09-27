@@ -1,0 +1,31 @@
+{
+  "name": "qpp-studio",
+  "private": true,
+  "version": "0.1.0",
+  "description": "QPP Studio — fast & elegant OCR powered by qppocr",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tauri-apps/cli": "^2.11.5",
+    "svelte": "^5.57.1",
+    "svelte-check": "^4.3.2",
+    "typescript": "~5.9.0",
+    "vite": "^8.3.0"
+  },
+  "license": "AGPL-3.0-or-later",
+  "author": "qinwh <qinwh.cn>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qinwenhui/qpp-studio"
+  }
+}

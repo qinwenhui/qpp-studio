@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: 构建 Windows 安装包
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 尝试装配打包模型(可选,无模型时跳过)
+        run: node tools/stage-models.mjs --slim || echo "无模型源,跳过"
+        continue-on-error: true
+
+      - name: 构建安装包
+        run: npm run tauri build
+
+      - name: 整理产物
+        shell: bash
+        run: |
+          mkdir -p artifact
+          cp "src-tauri/target/release/bundle/nsis/"*-setup.exe artifact/
+          cp src-tauri/target/release/qpp-studio.exe artifact/qpp-studio-portable.exe
+          cd artifact && ls -la
+
+      - name: 上传产物(每次构建可见)
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpp-studio-windows
+          path: artifact/
+
+      - name: 附到 GitHub Release(仅打 tag 时)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifact/*
+          generate_release_notes: true
