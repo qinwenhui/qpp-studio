@@ -271,3 +271,13 @@ pub fn text_preview(outcome: &OcrOutcomeDto, max_chars: usize) -> String {
     }
     s.chars().take(max_chars).collect()
 }
+
+/// PDF 页面渲染结果。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfPageDto {
+    pub media_token: String,
+    pub w: u32,
+    pub h: u32,
+    pub page: u32,
+}

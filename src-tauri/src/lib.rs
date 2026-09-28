@@ -10,6 +10,7 @@ pub mod image_util;
 pub mod hotkey;
 pub mod ingest;
 pub mod media;
+pub mod pdf;
 pub mod screenshot;
 pub mod selftest;
 pub mod settings;
@@ -255,6 +256,8 @@ pub fn run() {
             commands::copy_text,
             commands::reveal_path,
             commands::open_url,
+            commands::pdf_page_info,
+            commands::pdf_render_page,
         ])
         .run(tauri::generate_context!())
         .expect("QPP Studio 启动失败");

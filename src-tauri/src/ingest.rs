@@ -5,8 +5,19 @@
 
 use crate::dto::ImageItemDto;
 use crate::media::mime_for;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
+
+/// PDF 原始字节存储(懒渲染时取用)
+lazy_static::lazy_static! {
+    pub static ref PDF_STORE: Mutex<HashMap<String, Vec<u8>>> =
+        Mutex::new(HashMap::new());
+    /// PDF 页码映射:id → (总页数, 当前显示页)
+    pub static ref PDF_PAGES: Mutex<HashMap<String, (u32, u32)>> =
+        Mutex::new(HashMap::new());
+}
 
 #[derive(Clone)]
 pub struct ImageItem {
@@ -34,7 +45,7 @@ fn valid_image_ext(path: &Path) -> bool {
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase())
             .as_deref(),
-        Some("png" | "jpg" | "jpeg" | "bmp")
+        Some("png" | "jpg" | "jpeg" | "bmp" | "pdf")
     )
 }
 
@@ -47,11 +58,27 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
     if !valid_image_ext(path) {
         return Err(format!("不支持的图片格式: {}", path.display()));
     }
-    let (w, h) = crate::image_util::probe_dims_oriented(path)
-        .map_err(|e| format!("读取图片尺寸失败: {e}"))?;
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    // PDF:探测页数,每页创建一个条目(首页的宽高作为初始值)
+    let is_pdf = path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false);
+    let (w, h) = if is_pdf {
+        let bytes = std::fs::read(path).map_err(|e| format!("读取 PDF 失败: {e}"))?;
+        let count = crate::pdf::page_count(&bytes)?;
+        // 渲染第一页拿尺寸(低 DPI 即可)
+        let (pw, ph, _) = crate::pdf::render_page(&bytes, 0, crate::pdf::DPI_THUMB)?;
+        // 存 PDF 字节和页码供后续懒渲染
+        PDF_STORE.lock().unwrap().insert(id.clone(), bytes);
+        PDF_PAGES.lock().unwrap().insert(id.clone(), (count, 0)); // (总页数, 当前页)
+        (pw, ph)
+    } else {
+        crate::image_util::probe_dims_oriented(path)
+            .map_err(|e| format!("读取图片尺寸失败: {e}"))?
+    };
 
     let state = app.state::<crate::AppCtx>();
-    let id = uuid::Uuid::new_v4().simple().to_string();
     let media_token = state.media.register(path.to_path_buf(), mime_for(path));
 
     let item = ImageItem {
@@ -63,7 +90,7 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
         path: path.to_path_buf(),
         w,
         h,
-        origin: origin.into(),
+        origin: if is_pdf { "pdf".into() } else { origin.into() },
         added_at: now_ms(),
         media_token,
         thumb_token: String::new(), // 识别后由 item-done 事件带回
