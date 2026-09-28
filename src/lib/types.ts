@@ -149,8 +149,8 @@ export interface ItemState {
   item: ImageItem;
   phase: Phase;
   outcome?: OcrOutcome;
-  /** PDF 专属:总页数与当前显示页(非 PDF 为 null) */
-  pdfPages?: { count: number; current: number };
+  /** PDF 专属:总页数、当前显示页、后台识别进度(已识别页数,非 PDF 为 null) */
+  pdfPages?: { count: number; current: number; ocrDone?: number };
   canExtract?: boolean;
 }
 

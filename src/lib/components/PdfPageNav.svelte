@@ -1,47 +1,22 @@
 <script lang="ts">
   /** PDF 页码导航 + 后台识别进度指示。
-   *  PDF 拖入时后台自动识别全部页,导航条实时显示进度。
+   *  PDF 拖入时后台自动识别全部页,进度由 App.svelte 统一写进
+   *  pdfPages.ocrDone(单一事件源),这里只做展示。
    *  翻页 = 渲染新页 + 同步该页结果(已识别的页即时显示)。 */
   import Icon from '$lib/components/Icon.svelte';
   import { api } from '$lib/api';
   import { toast } from '$lib/state/app.svelte';
-  import { getActiveItem, imagesStore } from '$lib/state/images.svelte';
+  import { getActiveItem } from '$lib/state/images.svelte';
 
   const active = $derived(getActiveItem());
   const pdf = $derived(active?.pdfPages);
   const isPdf = $derived(!!pdf);
   const current = $derived(pdf?.current ?? 0);
   const count = $derived(pdf?.count ?? 0);
+  const ocrDone = $derived(pdf?.ocrDone ?? 0);
+  const ocrRunning = $derived(ocrDone < count && count > 0);
 
   let jumpTo = $state('');
-  let ocrDone = $state(0);
-  let ocrRunning = $state(false);
-
-  // 监听 PDF 后台识别进度
-  import { listen } from '@tauri/app/api/event';
-  import { onMount } from 'svelte';
-  onMount(() => {
-    const p = listen<{ id: string; page: number; done: number; total: number }>(
-      'pdf://page-done',
-      (e) => {
-        if (active?.item.id === e.payload.id) {
-          ocrDone = e.payload.done;
-          ocrRunning = ocrDone < e.payload.total;
-        }
-      },
-    );
-    const d = listen<{ id: string }>('pdf://ocr-done', (e) => {
-      if (active?.item.id === e.payload.id) {
-        ocrRunning = false;
-        ocrDone = count;
-        toast('success', 'PDF 全部识别完成');
-      }
-    });
-    return () => {
-      void p.then((f) => f());
-      void d.then((f) => f());
-    };
-  });
 
   async function go(page: number) {
     if (!active || !pdf) return;

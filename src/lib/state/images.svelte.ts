@@ -50,7 +50,7 @@ export async function addItems(list: ImageItem[]) {
         if (info) {
           const st = imagesStore.items.find((x) => x.item.id === it.id);
           if (st) {
-            st.pdfPages = { count: info[0], current: info[1] };
+            st.pdfPages = { count: info[0], current: info[1], ocrDone: 0 };
           }
         }
       });
@@ -204,7 +204,7 @@ export function mediaSrc(item: ImageItem): string {
   return mediaUrl(item.mediaToken);
 }
 
-/** PDF 后台识别每页结果:更新当前显示页的 outcome。 */
+/** PDF 后台识别每页结果:记录进度 + 更新当前显示页的 outcome。 */
 export function applyPdfPageDone(p: {
   id: string;
   page: number;
@@ -214,9 +214,17 @@ export function applyPdfPageDone(p: {
 }) {
   const st = imagesStore.items.find((i) => i.item.id === p.id);
   if (!st) return;
+  // 进度始终记录(导航条显示 X/N),条目切走再切回来也不丢
+  if (st.pdfPages) st.pdfPages.ocrDone = p.done;
   // 只有当前显示页才更新条目 outcome
   if (st.pdfPages && st.pdfPages.current === p.page) {
     st.outcome = p.outcome;
     st.phase = p.outcome.ok ? 'done' : 'error';
   }
+}
+
+/** PDF 后台识别全部完成:进度落定(即使个别页渲染失败被跳过也归位)。 */
+export function applyPdfOcrDone(id: string) {
+  const st = imagesStore.items.find((i) => i.item.id === id);
+  if (st?.pdfPages) st.pdfPages.ocrDone = st.pdfPages.count;
 }

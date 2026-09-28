@@ -20,7 +20,7 @@
 
   import { api } from '$lib/api';
   import { app, setView, toast } from '$lib/state/app.svelte';
-  import { addItems, applyOutcome, applyStatus, addItemWithOutcome, continuePending, applyPdfPageDone } from '$lib/state/images.svelte';
+  import { addItems, applyOutcome, applyStatus, addItemWithOutcome, continuePending, applyPdfPageDone, applyPdfOcrDone } from '$lib/state/images.svelte';
   import { applySettings, loadSettings, syncEngine, settings } from '$lib/state/settings.svelte';
   import type { Settings, EngineStatus, ImageItem, ItemOutcome, ToastMsg } from '$lib/types';
 
@@ -62,6 +62,7 @@
           applyPdfPageDone(e.payload);
         }),
         listen<{ id: string; total: number; name: string }>('pdf://ocr-done', (e) => {
+          applyPdfOcrDone(e.payload.id);
           const st = getActiveItem();
           if (st && st.item.id === e.payload.id) {
             toast('success', 'PDF 识别完成');
