@@ -1,6 +1,7 @@
 <script lang="ts">
-  /** PDF 页码导航:← 上一页 | 12/120 | 下一页 → + 输入跳转。
-   *  翻页时自动请求该页渲染,浏览到哪页识别到哪页。 */
+  /** PDF 页码导航 + 后台识别进度指示。
+   *  PDF 拖入时后台自动识别全部页,导航条实时显示进度。
+   *  翻页 = 渲染新页 + 同步该页结果(已识别的页即时显示)。 */
   import Icon from '$lib/components/Icon.svelte';
   import { api } from '$lib/api';
   import { toast } from '$lib/state/app.svelte';
@@ -13,16 +14,42 @@
   const count = $derived(pdf?.count ?? 0);
 
   let jumpTo = $state('');
+  let ocrDone = $state(0);
+  let ocrRunning = $state(false);
+
+  // 监听 PDF 后台识别进度
+  import { listen } from '@tauri/app/api/event';
+  import { onMount } from 'svelte';
+  onMount(() => {
+    const p = listen<{ id: string; page: number; done: number; total: number }>(
+      'pdf://page-done',
+      (e) => {
+        if (active?.item.id === e.payload.id) {
+          ocrDone = e.payload.done;
+          ocrRunning = ocrDone < e.payload.total;
+        }
+      },
+    );
+    const d = listen<{ id: string }>('pdf://ocr-done', (e) => {
+      if (active?.item.id === e.payload.id) {
+        ocrRunning = false;
+        ocrDone = count;
+        toast('success', 'PDF 全部识别完成');
+      }
+    });
+    return () => {
+      void p.then((f) => f());
+      void d.then((f) => f());
+    };
+  });
 
   async function go(page: number) {
     if (!active || !pdf) return;
     const clamped = Math.max(0, Math.min(count - 1, page));
     if (clamped === current) return;
     pdf.current = clamped;
-    // 请求渲染该页(返回新的 media 令牌,画布自动刷新)
     try {
       const result = await api.pdfRenderPage(active.item.id, clamped);
-      // 更新条目的媒体令牌(画布 <img> src 变化即刷新)
       active.item.mediaToken = result.mediaToken;
       active.item.w = result.w;
       active.item.h = result.h;
@@ -48,16 +75,6 @@
       toast('info', '正在从文本层提取(毫秒级)…');
       await api.pdfExtractAll(active.item.id);
       toast('success', '提取完成');
-    } catch (e) {
-      toast('error', String(e));
-    }
-  }
-
-  async function ocrAll() {
-    if (!active) return;
-    try {
-      toast('info', `开始识别全部 ${count} 页…`);
-      await api.pdfOcrRange(active.item.id, 0, count - 1);
     } catch (e) {
       toast('error', String(e));
     }
@@ -108,6 +125,22 @@
       <Icon name="chevronRight" size={14} />
     </button>
 
+    <!-- 识别进度:后台自动识别,这里只显示进度 -->
+    {#if ocrRunning}
+      <span class="ocr-progress">
+        <span class="spin"><Icon name="spinner" size={11} spinning /></span>
+        <span class="done">{ocrDone}/{count}</span>
+        <span class="mini-bar">
+          <span class="mini-fill" style="width: {count ? (ocrDone / count) * 100 : 0}%"></span>
+        </span>
+      </span>
+    {:else if ocrDone >= count && count > 0}
+      <span class="ocr-done">
+        <Icon name="check" size={11} />
+        已完成
+      </span>
+    {/if}
+
     {#if active?.canExtract}
       <button
         class="extract-btn"
@@ -118,14 +151,6 @@
         一键提取
       </button>
     {/if}
-    <button
-      class="ocr-all-btn"
-      onclick={() => ocrAll()}
-      title="识别全部 {count} 页"
-    >
-      <Icon name="layers" size={13} />
-      识别全部
-    </button>
 
     <span class="page-hint">{active?.item.name}</span>
   </div>
@@ -191,31 +216,41 @@
     min-width: 28px;
   }
 
-  .page-hint {
-    margin-left: auto;
-    font-size: 11px;
-    color: var(--text-faint);
+  .ocr-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    font-family: var(--font-mono);
+    color: var(--accent);
+  }
+  .ocr-progress .done {
     white-space: nowrap;
+  }
+  .ocr-progress .spin {
+    display: inline-flex;
+  }
+  .mini-bar {
+    width: 60px;
+    height: 4px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
     overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 260px;
+  }
+  .mini-fill {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent);
+    transition: width 0.3s var(--ease-out);
   }
 
-  .ocr-all-btn {
+  .ocr-done {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    height: 24px;
-    padding: 0 10px;
-    border-radius: 999px;
     font-size: 11.5px;
-    color: var(--accent);
-    background: var(--accent-soft);
-    transition: all var(--speed-fast) var(--ease-out);
-    white-space: nowrap;
-  }
-  .ocr-all-btn:hover {
-    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    color: var(--success);
   }
 
   .extract-btn {
@@ -234,5 +269,15 @@
   }
   .extract-btn:hover {
     filter: brightness(1.1);
+  }
+
+  .page-hint {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 260px;
   }
 </style>

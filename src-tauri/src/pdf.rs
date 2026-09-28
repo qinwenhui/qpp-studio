@@ -8,9 +8,9 @@ use std::path::Path;
 
 use pdfium_render::prelude::*;
 
-/// PDF 渲染分辨率(pt → px 按 DPI/72 换算)
+/// PDF 渲染分辨率(统一用同一个 DPI,画布和 OCR 坐标天然对齐)
 pub const DPI_THUMB: u16 = 96;
-pub const DPI_VIEW: u16 = 150;
+pub const DPI_VIEW: u16 = 200;  // 和 OCR 一致,框线不错位
 pub const DPI_OCR: u16 = 200;
 
 lazy_static::lazy_static! {
