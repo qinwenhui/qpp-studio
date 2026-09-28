@@ -532,28 +532,22 @@ pub fn pdf_page_info(id: String) -> Option<(u32, u32)> {
 pub async fn pdf_render_page(
     app: AppHandle,
     id: String,
-    page: u32,
+    _page: u32,
     _dpi: Option<u16>,
 ) -> Result<crate::dto::PdfPageDto, String> {
-    // 异步:渲染在 spawn_blocking,不卡 UI
-    let id2 = id.clone();
-    let app2 = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::ingest::pdf_update_page(&app2, &id2, page)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-
+    // 新架构:每页已是独立条目,翻页 = 前端切换条目,此命令仅返回当前条目信息
     let state = app.state::<AppCtx>();
-    let token = {
-        let items = state.items.read().unwrap();
-        items.get(&id).map(|i| i.media_token.clone()).unwrap_or_default()
-    };
-    let (w, h) = {
-        let items = state.items.read().unwrap();
-        items.get(&id).map(|i| (i.w, i.h)).unwrap_or((0, 0))
-    };
-    Ok(crate::dto::PdfPageDto { media_token: token, w, h, page })
+    let items = state.items.read().unwrap();
+    if let Some(item) = items.get(&id) {
+        Ok(crate::dto::PdfPageDto {
+            media_token: item.media_token.clone(),
+            w: item.w,
+            h: item.h,
+            page: _page,
+        })
+    } else {
+        Err("条目不存在".into())
+    }
 }
 
 /// 对 PDF 指定范围执行批量识别:每页渲染→入库→进批量队列。

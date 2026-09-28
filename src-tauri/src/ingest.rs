@@ -1,20 +1,20 @@
-//! 统一入库：文件 / 剪贴板位图 / 截图裁剪 / PDF → ImageItem。
+//! 统一入库：图片 / PDF / 剪贴板 / 截图 → ImageItem。
 //!
-//! 设计原则:**条目的 path 和 media_token 永远指向可在画布显示的图片文件**。
-//! PDF 在入库时渲染第 1 页为 PNG 落盘,条目指向 PNG;后续翻页同样渲染→落盘→更新令牌。
+//! PDF 策略:拖入时后台渲染全部页为 PNG,每页创建普通条目,
+//! 全走现有批量识别管线。用户翻页 = 切换条目,内容即时可见。
 
 use crate::dto::ImageItemDto;
 use crate::media::mime_for;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 lazy_static::lazy_static! {
-    /// PDF 原始字节(翻页渲染用)
+    /// PDF 原始字节(元信息查询用)
     pub static ref PDF_STORE: Mutex<HashMap<String, Vec<u8>>> =
         Mutex::new(HashMap::new());
-    /// PDF 元信息:id → (总页数, 当前显示页)
+    /// PDF 元信息:id → (总页数, 当前页)
     pub static ref PDF_PAGES: Mutex<HashMap<String, (u32, u32)>> =
         Mutex::new(HashMap::new());
 }
@@ -23,7 +23,7 @@ lazy_static::lazy_static! {
 pub struct ImageItem {
     pub id: String,
     pub name: String,
-    /// 可显示/可解码的图片路径(PDF 条目指向渲染后的 PNG)
+    /// 可显示/可解码的图片路径
     pub path: PathBuf,
     pub w: u32,
     pub h: u32,
@@ -41,7 +41,7 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn valid_image_ext(path: &Path) -> bool {
+fn valid_ext(path: &Path) -> bool {
     matches!(
         path.extension()
             .and_then(|e| e.to_str())
@@ -51,94 +51,121 @@ fn valid_image_ext(path: &Path) -> bool {
     )
 }
 
-/// PDF 渲染当前页 → PNG 落盘 → 更新条目路径和令牌。
-/// 翻页和入库共用此函数。
-pub fn pdf_update_page(app: &AppHandle, id: &str, page: u32) -> Result<(u32, u32), String> {
-    // 先取字节(释放锁再做重活,避免长时间持锁)
-    let bytes = {
-        let store = PDF_STORE.lock().unwrap();
-        store.get(id).cloned().ok_or("PDF 条目不存在")?
-    };
-    let total = {
-        let pages = PDF_PAGES.lock().unwrap();
-        pages.get(id).map(|p| p.0).unwrap_or(1)
-    };
-    // 渲染(重活)
-    let (w, h, rgb) = crate::pdf::render_page(&bytes, page, crate::pdf::DPI_VIEW)?;
+/// 渲染 PDF 某页 → PNG 落盘 → 返回 (路径, 宽, 高, 媒体令牌, 缩略图令牌)
+fn render_pdf_page_to_item(
+    app: &AppHandle,
+    bytes: &[u8],
+    page: u32,
+    item_id: &str,
+) -> Result<(PathBuf, u32, u32, String, String), String> {
     let state = app.state::<crate::AppCtx>();
-    let png_path = state.dirs.inbox.join(format!("{id}_p{page}.png"));
+    let (w, h, rgb) = crate::pdf::render_page(bytes, page, crate::pdf::DPI_VIEW)?;
+    let png_path = state.dirs.inbox.join(format!("{item_id}_p{page}.png"));
     let img = image::RgbImage::from_raw(w, h, rgb)
         .ok_or("渲染数据无效")?;
     img.save_with_format(&png_path, image::ImageFormat::Png)
-        .map_err(|e| format!("保存失败: {e}"))?;
+        .map_err(|e| format!("保存页面失败: {e}"))?;
+    let media_token = state.media.register(png_path.clone(), "image/png");
 
-    // 更新条目(短锁)
-    {
-        let token = state.media.register(png_path.clone(), "image/png");
-        let mut items = state.items.write().unwrap();
-        if let Some(item) = items.get_mut(id) {
-            item.path = png_path;
-            item.media_token = token;
-            item.w = w;
-            item.h = h;
+    // 缩略图
+    let thumb_token = match crate::pdf::render_page(bytes, page, crate::pdf::DPI_THUMB) {
+        Ok((tw, th, trgb)) => {
+            let tp = state.dirs.thumbs.join(format!("{item_id}.jpg"));
+            if let Some(ti) = image::RgbImage::from_raw(tw, th, trgb) {
+                if ti.save_with_format(&tp, image::ImageFormat::Jpeg).is_ok() {
+                    state.media.register(tp, "image/jpeg")
+                } else { String::new() }
+            } else { String::new() }
         }
-    }
-    // 更新页码(短锁,避免嵌套)
-    PDF_PAGES.lock().unwrap().insert(id.to_string(), (total, page));
-    Ok((w, h))
+        Err(_) => String::new(),
+    };
+    Ok((png_path, w, h, media_token, thumb_token))
 }
 
 pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageItemDto, String> {
     if !path.is_file() {
         return Err(format!("文件不存在: {}", path.display()));
     }
-    if !valid_image_ext(path) {
+    if !valid_ext(path) {
         return Err(format!("不支持的格式: {}", path.display()));
     }
-    let id = uuid::Uuid::new_v4().simple().to_string();
-    let state = app.state::<crate::AppCtx>();
 
+    let state = app.state::<crate::AppCtx>();
     let is_pdf = path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.eq_ignore_ascii_case("pdf"))
         .unwrap_or(false);
 
     if is_pdf {
-        // ---- PDF:渲染第 1 页成 PNG,path/media_token 指向 PNG ----
         let bytes = std::fs::read(path).map_err(|e| format!("读取 PDF 失败: {e}"))?;
         let count = crate::pdf::page_count(&bytes)?;
         let can_extract = crate::pdf::has_text_layer(&bytes);
-        PDF_STORE.lock().unwrap().insert(id.clone(), bytes);
+        let file_name = path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "PDF".into());
+
+        // 存 PDF 元信息
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        PDF_STORE.lock().unwrap().insert(id.clone(), bytes.clone());
         PDF_PAGES.lock().unwrap().insert(id.clone(), (count, 0));
 
-        // 渲染第 1 页
-        let (w, h, rgb) = crate::pdf::render_page(
-            &PDF_STORE.lock().unwrap().get(&id).unwrap(), 0, crate::pdf::DPI_VIEW,
-        )?;
-        let png_path = state.dirs.inbox.join(format!("{id}_p0.png"));
-        let img = image::RgbImage::from_raw(w, h, rgb)
-            .ok_or_else(|| "渲染数据无效".to_string())?;
-        img.save_with_format(&png_path, image::ImageFormat::Png)
-            .map_err(|e| format!("保存页面图片失败: {e}"))?;
-        let media_token = state.media.register(png_path.clone(), "image/png");
-
+        // 同步渲染第 1 页(用户立刻看到内容)
+        let id1 = uuid::Uuid::new_v4().simple().to_string();
+        let (png_path, w, h, media_token, thumb_token) =
+            render_pdf_page_to_item(app, &bytes, 0, &id1)?;
         let item = ImageItem {
-            id: id.clone(),
-            name: path.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "PDF".into()),
+            id: id1.clone(),
+            name: format!("{} · 第1页", file_name),
             path: png_path,
             w, h,
             origin: "pdf".into(),
             added_at: now_ms(),
             media_token,
-            thumb_token: String::new(),
+            thumb_token,
             can_extract,
         };
         state.register_item(item);
-        Ok(state.item_dto(&id).expect("刚插入的条目"))
+
+        // 后台线程:渲染剩余页,每完成一页推送到前端
+        if count > 1 {
+            let app2 = app.clone();
+            let fname = file_name.clone();
+            std::thread::spawn(move || {
+                for page in 1..count {
+                    let pid = uuid::Uuid::new_v4().simple().to_string();
+                    let result = render_pdf_page_to_item(&app2, &bytes, page, &pid);
+                    match result {
+                        Ok((png_path, w, h, media_token, thumb_token)) => {
+                            let st = app2.state::<crate::AppCtx>();
+                            let item = ImageItem {
+                                id: pid.clone(),
+                                name: format!("{} · 第{}页", fname, page + 1),
+                                path: png_path,
+                                w, h,
+                                origin: "pdf".into(),
+                                added_at: now_ms(),
+                                media_token,
+                                thumb_token,
+                                can_extract: false,
+                            };
+                            st.register_item(item);
+                            // 逐页推送到前端(自动进识别队列)
+                            if let Some(dto) = st.item_dto(&pid) {
+                                let _ = app2.emit("app://add-items", vec![dto]);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[pdf] 第 {} 页渲染失败: {e}", page + 1);
+                        }
+                    }
+                }
+            });
+        }
+
+        Ok(state.item_dto(&id1).expect("刚插入的条目"))
     } else {
-        // ---- 普通图片:零解码,只读头部 ----
+        // ---- 普通图片 ----
+        let id = uuid::Uuid::new_v4().simple().to_string();
         let (w, h) = crate::image_util::probe_dims_oriented(path)
             .map_err(|e| format!("读取图片尺寸失败: {e}"))?;
         let media_token = state.media.register(path.to_path_buf(), mime_for(path));
@@ -160,7 +187,7 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
     }
 }
 
-/// 位图入库(剪贴板/截图):保存 PNG 到 inbox 再走文件路径。
+/// 位图入库(剪贴板/截图)
 pub fn ingest_bitmap(
     app: &AppHandle,
     name: &str,
