@@ -29,7 +29,8 @@ pub fn engine_status(state: State<AppCtx>) -> EngineStatusDto {
 pub async fn pick_images(app: AppHandle) -> Result<Vec<ImageItemDto>, String> {
     let paths = tauri::async_runtime::spawn_blocking(|| {
         rfd::FileDialog::new()
-            .add_filter("图片", &["png", "jpg", "jpeg", "bmp"])
+            .add_filter("图片和 PDF", &["png", "jpg", "jpeg", "bmp", "pdf"])
+            .add_filter("PDF 文档", &["pdf"])
             .pick_files()
     })
     .await
@@ -534,41 +535,14 @@ pub fn pdf_render_page(
     page: u32,
     dpi: Option<u16>,
 ) -> Result<crate::dto::PdfPageDto, String> {
-    let bytes = crate::ingest::PDF_STORE
-        .lock()
-        .unwrap()
-        .get(&id)
-        .cloned()
-        .ok_or("不是 PDF 条目或已释放")?;
-    let dpi = dpi.unwrap_or(crate::pdf::DPI_VIEW);
-    let (w, h, rgb) = crate::pdf::render_page(&bytes, page, dpi)?;
-
-    // 生成缩略图并存入 thumbs 目录
+    // 渲染→落盘 PNG→更新条目路径和令牌(画布自动刷新)
+    let (w, h) = crate::ingest::pdf_update_page(&app, &id, page)?;
     let state = app.state::<AppCtx>();
-    let thumb_path = crate::thumb::make_thumb_from_rgb(w, h, &rgb, &id, &state.dirs.thumbs)
-        .map_err(|e| e.to_string())?;
-    let media_token = state.media.register(thumb_path, "image/jpeg");
-
-    // 更新页码状态
-    if let Some(entry) = crate::ingest::PDF_PAGES.lock().unwrap().get_mut(&id) {
-        entry.1 = page;
-    }
-
-    // 更新条目的宽高(不同页可能尺寸不同)
-    {
-        let mut items = state.items.write().unwrap();
-        if let Some(item) = items.get_mut(&id) {
-            item.w = w;
-            item.h = h;
-        }
-    }
-
-    Ok(crate::dto::PdfPageDto {
-        media_token,
-        w,
-        h,
-        page,
-    })
+    let token = {
+        let items = state.items.read().unwrap();
+        items.get(&id).map(|i| i.media_token.clone()).unwrap_or_default()
+    };
+    Ok(crate::dto::PdfPageDto { media_token: token, w, h, page })
 }
 
 /// 对 PDF 指定范围执行批量识别:每页渲染→入库→进批量队列。
@@ -613,7 +587,7 @@ pub async fn pdf_ocr_range(
                 }
             };
 
-            // 每页创建独立条目(名称带页码,进正常批量队列)
+            // 每页 PNG 落盘,path 指向 PNG(OCR 走正常解码管线)
             let pid = uuid::Uuid::new_v4().simple().to_string();
             let parent_name = {
                 let items = state.items.read().unwrap();
@@ -622,6 +596,16 @@ pub async fn pdf_ocr_range(
                     .map(|i| i.name.clone())
                     .unwrap_or_else(|| "PDF".into())
             };
+            let png_path = state.dirs.inbox.join(format!("{pid}_p{page}.png"));
+            if let Some(png_img) = image::RgbImage::from_raw(w, h, img.data.clone()) {
+                if let Err(e) = png_img.save_with_format(&png_path, image::ImageFormat::Png) {
+                    eprintln!("[pdf] p{} save: {e}", page + 1);
+                    continue;
+                }
+            } else {
+                continue;
+            }
+            let media_token = state.media.register(png_path.clone(), "image/png");
             let display_name = format!("{} · 第{}页", parent_name, page + 1);
 
             // 缩略图
@@ -649,6 +633,7 @@ pub async fn pdf_ocr_range(
                 can_extract: false,
             };
             state.register_item(item);
+
             ids.push(pid);
         }
 

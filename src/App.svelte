@@ -77,7 +77,7 @@
             app.dropActive = false;
             clearTimeout(dropWatchdog);
             if (event.payload.type === 'drop') {
-              const imgRe = /\.(png|jpe?g|bmp)$/i;
+              const imgRe = /\.(png|jpe?g|bmp|pdf)$/i;
               const paths = event.payload.paths.filter((p) => imgRe.test(p));
               if (paths.length) {
                 api
