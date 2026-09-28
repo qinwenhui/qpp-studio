@@ -529,18 +529,29 @@ pub fn pdf_page_info(id: String) -> Option<(u32, u32)> {
 
 /// 渲染 PDF 指定页为图像(通过 media:// 协议返回令牌)。
 #[tauri::command]
-pub fn pdf_render_page(
+pub async fn pdf_render_page(
     app: AppHandle,
     id: String,
     page: u32,
-    dpi: Option<u16>,
+    _dpi: Option<u16>,
 ) -> Result<crate::dto::PdfPageDto, String> {
-    // 渲染→落盘 PNG→更新条目路径和令牌(画布自动刷新)
-    let (w, h) = crate::ingest::pdf_update_page(&app, &id, page)?;
+    // 异步:渲染在 spawn_blocking,不卡 UI
+    let id2 = id.clone();
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::ingest::pdf_update_page(&app2, &id2, page)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
     let state = app.state::<AppCtx>();
     let token = {
         let items = state.items.read().unwrap();
         items.get(&id).map(|i| i.media_token.clone()).unwrap_or_default()
+    };
+    let (w, h) = {
+        let items = state.items.read().unwrap();
+        items.get(&id).map(|i| (i.w, i.h)).unwrap_or((0, 0))
     };
     Ok(crate::dto::PdfPageDto { media_token: token, w, h, page })
 }

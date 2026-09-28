@@ -54,34 +54,37 @@ fn valid_image_ext(path: &Path) -> bool {
 /// PDF 渲染当前页 → PNG 落盘 → 更新条目路径和令牌。
 /// 翻页和入库共用此函数。
 pub fn pdf_update_page(app: &AppHandle, id: &str, page: u32) -> Result<(u32, u32), String> {
-    let bytes = PDF_STORE
-        .lock().unwrap()
-        .get(id).cloned()
-        .ok_or("PDF 条目不存在或已释放")?;
+    // 先取字节(释放锁再做重活,避免长时间持锁)
+    let bytes = {
+        let store = PDF_STORE.lock().unwrap();
+        store.get(id).cloned().ok_or("PDF 条目不存在")?
+    };
+    let total = {
+        let pages = PDF_PAGES.lock().unwrap();
+        pages.get(id).map(|p| p.0).unwrap_or(1)
+    };
+    // 渲染(重活)
     let (w, h, rgb) = crate::pdf::render_page(&bytes, page, crate::pdf::DPI_VIEW)?;
     let state = app.state::<crate::AppCtx>();
     let png_path = state.dirs.inbox.join(format!("{id}_p{page}.png"));
     let img = image::RgbImage::from_raw(w, h, rgb)
-        .ok_or("渲染数据与尺寸不符")?;
+        .ok_or("渲染数据无效")?;
     img.save_with_format(&png_path, image::ImageFormat::Png)
-        .map_err(|e| format!("保存页面图片失败: {e}"))?;
+        .map_err(|e| format!("保存失败: {e}"))?;
 
-    // 更新条目
+    // 更新条目(短锁)
     {
+        let token = state.media.register(png_path.clone(), "image/png");
         let mut items = state.items.write().unwrap();
         if let Some(item) = items.get_mut(id) {
-            let token = state.media.register(png_path, "image/png");
-            item.path = state.dirs.inbox.join(format!("{id}_p{page}.png"));
+            item.path = png_path;
             item.media_token = token;
             item.w = w;
             item.h = h;
         }
     }
-    // 更新页码
-    PDF_PAGES.lock().unwrap().insert(id.to_string(), (
-        PDF_PAGES.lock().unwrap().get(id).map(|p| p.0).unwrap_or(1),
-        page,
-    ));
+    // 更新页码(短锁,避免嵌套)
+    PDF_PAGES.lock().unwrap().insert(id.to_string(), (total, page));
     Ok((w, h))
 }
 
