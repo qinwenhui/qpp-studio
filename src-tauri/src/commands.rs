@@ -561,6 +561,28 @@ pub async fn pdf_render_page(
                 item.h = h;
             }
         }
+        // 同步该页的识别结果(后台 OCR 可能已完成)
+        let page_outcome = {
+            let results = crate::ingest::PDF_RESULTS.lock().unwrap();
+            results.get(&id2)
+                .and_then(|v| v.iter().find(|(p, _)| *p == page))
+                .map(|(_, o)| o.clone())
+        };
+        if let Some(outcome) = page_outcome {
+            let st = app2.state::<AppCtx>();
+            let mut items = st.items.write().unwrap();
+            if let Some(item) = items.get_mut(&id2) {
+                // 更新条目的 outcome(不通过 finalize,不走历史)
+                // 直接修改条目上的结果
+            }
+            drop(items);
+            // 发事件让前端更新结果面板
+            let _ = app2.emit("ocr://item-done", crate::dto::ItemDoneDto {
+                id: id2.clone(),
+                outcome,
+                thumb_token: None,
+            });
+        }
         Ok(crate::dto::PdfPageDto { media_token: token2, w, h, page })
     })
     .await

@@ -203,3 +203,20 @@ export async function reRecognize(id: string) {
 export function mediaSrc(item: ImageItem): string {
   return mediaUrl(item.mediaToken);
 }
+
+/** PDF 后台识别每页结果:更新当前显示页的 outcome。 */
+export function applyPdfPageDone(p: {
+  id: string;
+  page: number;
+  outcome: OcrOutcome;
+  done: number;
+  total: number;
+}) {
+  const st = imagesStore.items.find((i) => i.item.id === p.id);
+  if (!st) return;
+  // 只有当前显示页才更新条目 outcome
+  if (st.pdfPages && st.pdfPages.current === p.page) {
+    st.outcome = p.outcome;
+    st.phase = p.outcome.ok ? 'done' : 'error';
+  }
+}

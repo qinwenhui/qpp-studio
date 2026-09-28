@@ -153,3 +153,12 @@ export interface ItemState {
   pdfPages?: { count: number; current: number };
   canExtract?: boolean;
 }
+
+/** PDF 每页识别完成事件 */
+export interface PdfPageDone {
+  id: string;
+  page: number;
+  outcome: OcrOutcome;
+  done: number;
+  total: number;
+}

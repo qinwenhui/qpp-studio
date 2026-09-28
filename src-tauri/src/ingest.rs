@@ -17,6 +17,9 @@ lazy_static::lazy_static! {
     /// PDF 元信息:id → (总页数, 当前页)
     pub static ref PDF_PAGES: Mutex<HashMap<String, (u32, u32)>> =
         Mutex::new(HashMap::new());
+    /// PDF 每页识别结果
+    pub static ref PDF_RESULTS: Mutex<HashMap<String, Vec<(u32, crate::dto::OcrOutcomeDto)>>> =
+        Mutex::new(HashMap::new());
 }
 
 #[derive(Clone)]
@@ -105,16 +108,17 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "PDF".into());
 
-        // 存元信息(先存再渲染,bytes 从变量直接用)
+        // 存元信息
         PDF_STORE.lock().unwrap().insert(id.clone(), bytes.clone());
         PDF_PAGES.lock().unwrap().insert(id.clone(), (count, 0));
+        PDF_RESULTS.lock().unwrap().insert(id.clone(), Vec::new());
 
         // 同步渲染第 1 页
         let (png_path, w, h, media_token, thumb_token) =
             render_pdf_page_to_item(app, &bytes, 0, &id)?;
         let item = ImageItem {
             id: id.clone(),
-            name: file_name,
+            name: file_name.clone(),
             path: png_path,
             w, h,
             origin: "pdf".into(),
@@ -124,6 +128,58 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
             can_extract,
         };
         state.register_item(item);
+
+        // 后台:自动识别全部页,逐页推送结果(不推条目,只推识别结果)
+        let app2 = app.clone();
+        let parent_id = id.clone();
+        let pdf_name = file_name.clone();
+        std::thread::spawn(move || {
+            let st = app2.state::<crate::AppCtx>();
+            let mut all_results = Vec::new();
+            for page in 0..count {
+                // 渲染
+                let (w, h, rgb) = match crate::pdf::render_page(&bytes, page, crate::pdf::DPI_OCR) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                let img = match qppocr::rgb_from_bytes(w, h, rgb) {
+                    Ok(i) => i,
+                    Err(_) => continue,
+                };
+                // OCR
+                let outcome = {
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        st.engine.run_image(img)
+                    }));
+                    crate::dto::outcome_from(match r {
+                        Ok(Ok(v)) => Ok(v),
+                        Ok(Err(e)) => Err(e),
+                        Err(_) => Err(qppocr::Error::Image("引擎内部错误".into())),
+                    })
+                };
+                all_results.push((page, outcome.clone()));
+                // 存入 PDF_RESULTS
+                PDF_RESULTS.lock().unwrap().insert(parent_id.clone(), all_results.clone());
+                // 推送到前端: {page, outcome, done, total}
+                let _ = app2.emit("pdf://page-done", serde_json::json!({
+                    "id": parent_id,
+                    "page": page,
+                    "outcome": &outcome,
+                    "done": page + 1,
+                    "total": count,
+                }));
+                // 第 1 页结果也更新到条目上(立即可见)
+                if page == 0 {
+                    crate::batch::finalize(&app2, &parent_id, &outcome, None);
+                }
+            }
+            // 完成
+            let _ = app2.emit("pdf://ocr-done", serde_json::json!({
+                "id": parent_id,
+                "total": count,
+                "name": pdf_name,
+            }));
+        });
 
         Ok(state.item_dto(&id).expect("刚插入的条目"))
     } else {

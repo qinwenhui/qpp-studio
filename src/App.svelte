@@ -20,7 +20,7 @@
 
   import { api } from '$lib/api';
   import { app, setView, toast } from '$lib/state/app.svelte';
-  import { addItems, applyOutcome, applyStatus, addItemWithOutcome, continuePending } from '$lib/state/images.svelte';
+  import { addItems, applyOutcome, applyStatus, addItemWithOutcome, continuePending, applyPdfPageDone } from '$lib/state/images.svelte';
   import { applySettings, loadSettings, syncEngine, settings } from '$lib/state/settings.svelte';
   import type { Settings, EngineStatus, ImageItem, ItemOutcome, ToastMsg } from '$lib/types';
 
@@ -56,6 +56,16 @@
         // 自测模式:后端直接注入条目,走完整 UI 流程
         listen<ImageItem[]>('app://add-items', (e) => {
           addItems(e.payload);
+        }),
+        // PDF 后台识别进度
+        listen<import('$lib/types').PdfPageDone>('pdf://page-done', (e) => {
+          applyPdfPageDone(e.payload);
+        }),
+        listen<{ id: string; total: number; name: string }>('pdf://ocr-done', (e) => {
+          const st = getActiveItem();
+          if (st && st.item.id === e.payload.id) {
+            toast('success', 'PDF 识别完成');
+          }
         }),
         // 自测模式:走用户同款 add_files 命令(invoke 返回通道)
         listen<string[]>('app://selftest-open', (e) => {
