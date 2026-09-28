@@ -532,22 +532,39 @@ pub fn pdf_page_info(id: String) -> Option<(u32, u32)> {
 pub async fn pdf_render_page(
     app: AppHandle,
     id: String,
-    _page: u32,
+    page: u32,
     _dpi: Option<u16>,
 ) -> Result<crate::dto::PdfPageDto, String> {
-    // 新架构:每页已是独立条目,翻页 = 前端切换条目,此命令仅返回当前条目信息
-    let state = app.state::<AppCtx>();
-    let items = state.items.read().unwrap();
-    if let Some(item) = items.get(&id) {
-        Ok(crate::dto::PdfPageDto {
-            media_token: item.media_token.clone(),
-            w: item.w,
-            h: item.h,
-            page: _page,
-        })
-    } else {
-        Err("条目不存在".into())
-    }
+    // 翻页:从 PDF 字节渲染指定页 → 落盘 PNG → 更新条目 path/媒体令牌 → 前端画布刷新
+    let app2 = app.clone();
+    let id2 = id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = crate::ingest::PDF_STORE
+            .lock().unwrap()
+            .get(&id2).cloned()
+            .ok_or("PDF 条目不存在")?;
+        let state = app2.state::<AppCtx>();
+        let (w, h, rgb) = crate::pdf::render_page(&bytes, page, crate::pdf::DPI_VIEW)?;
+        let png_path = state.dirs.inbox.join(format!("{id2}_p{page}.png"));
+        let img = image::RgbImage::from_raw(w, h, rgb)
+            .ok_or("渲染数据无效")?;
+        img.save_with_format(&png_path, image::ImageFormat::Png)
+            .map_err(|e| format!("保存失败: {e}"))?;
+        let token = state.media.register(png_path.clone(), "image/png");
+        let token2 = token.clone();
+        {
+            let mut items = state.items.write().unwrap();
+            if let Some(item) = items.get_mut(&id2) {
+                item.path = png_path;
+                item.media_token = token;
+                item.w = w;
+                item.h = h;
+            }
+        }
+        Ok(crate::dto::PdfPageDto { media_token: token2, w, h, page })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 对 PDF 指定范围执行批量识别:每页渲染→入库→进批量队列。

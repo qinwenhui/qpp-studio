@@ -44,7 +44,7 @@
   }
 
   let imgEl = $state<HTMLImageElement | null>(null);
-  let imgLoadedId = ''; // 当前已加载图片的 item id
+  let imgLoadedKey = ''; // 当前已加载图片的 item id
   let raf = 0;
   let dragging = $state(false);
   let lastPx = 0;
@@ -56,28 +56,29 @@
   const result = $derived<OcrResult | undefined>(active?.outcome?.result);
   const lines = $derived<TextLine[]>(result?.lines ?? []);
 
-  // ---- 图片加载 ----
+  // ---- 图片加载(key = id:token,翻页换 token 也能触发) ----
   $effect(() => {
     const item = active?.item;
     if (!item) {
       imgEl = null;
-      imgLoadedId = '';
+      imgLoadedKey = '';
       requestDraw();
       return;
     }
-    if (imgLoadedId === item.id) return;
+    const key = item.id + ':' + item.mediaToken;
+    if (imgLoadedKey === key) return;
     const el = new Image();
     el.src = mediaUrl(item.mediaToken);
-    imgLoadedId = item.id;
+    imgLoadedKey = key;
     el.decode().then(
       () => {
-        if (imgLoadedId === item.id) {
+        if (imgLoadedKey === key) {
           imgEl = el;
           fit();
         }
       },
       () => {
-        if (imgLoadedId === item.id) {
+        if (imgLoadedKey === key) {
           imgEl = null;
           requestDraw();
           // 失败可诊断:把 URL 报给用户而不是无声空白
@@ -380,7 +381,7 @@
     void app.focus?.id;
     void app.selected?.line;
     void lines.length;
-    void imgLoadedId;
+    void imgLoadedKey;
     void canvas; // canvas 元素随首张图片出现 → 触发首绘
     requestDraw();
   });

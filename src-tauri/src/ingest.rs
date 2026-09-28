@@ -97,6 +97,7 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
         .unwrap_or(false);
 
     if is_pdf {
+        let id = uuid::Uuid::new_v4().simple().to_string();
         let bytes = std::fs::read(path).map_err(|e| format!("读取 PDF 失败: {e}"))?;
         let count = crate::pdf::page_count(&bytes)?;
         let can_extract = crate::pdf::has_text_layer(&bytes);
@@ -104,18 +105,18 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "PDF".into());
 
-        // 存 PDF 元信息
-        let id = uuid::Uuid::new_v4().simple().to_string();
-        PDF_STORE.lock().unwrap().insert(id.clone(), bytes.clone());
+        // 存 PDF 元信息(后台 OCR 由 pdf_ocr_range 命令负责,不在入库时触发)
+        let bytes_ref = PDF_STORE.lock().unwrap();
+        let bytes_for_render = bytes_ref.get(&id).cloned().unwrap_or_default();
+        drop(bytes_ref);
         PDF_PAGES.lock().unwrap().insert(id.clone(), (count, 0));
 
         // 同步渲染第 1 页(用户立刻看到内容)
-        let id1 = uuid::Uuid::new_v4().simple().to_string();
         let (png_path, w, h, media_token, thumb_token) =
-            render_pdf_page_to_item(app, &bytes, 0, &id1)?;
+            render_pdf_page_to_item(app, &bytes_for_render, 0, &id)?;
         let item = ImageItem {
-            id: id1.clone(),
-            name: format!("{} · 第1页", file_name),
+            id: id.clone(),
+            name: file_name,
             path: png_path,
             w, h,
             origin: "pdf".into(),
@@ -126,43 +127,7 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
         };
         state.register_item(item);
 
-        // 后台线程:渲染剩余页,每完成一页推送到前端
-        if count > 1 {
-            let app2 = app.clone();
-            let fname = file_name.clone();
-            std::thread::spawn(move || {
-                for page in 1..count {
-                    let pid = uuid::Uuid::new_v4().simple().to_string();
-                    let result = render_pdf_page_to_item(&app2, &bytes, page, &pid);
-                    match result {
-                        Ok((png_path, w, h, media_token, thumb_token)) => {
-                            let st = app2.state::<crate::AppCtx>();
-                            let item = ImageItem {
-                                id: pid.clone(),
-                                name: format!("{} · 第{}页", fname, page + 1),
-                                path: png_path,
-                                w, h,
-                                origin: "pdf".into(),
-                                added_at: now_ms(),
-                                media_token,
-                                thumb_token,
-                                can_extract: false,
-                            };
-                            st.register_item(item);
-                            // 逐页推送到前端(自动进识别队列)
-                            if let Some(dto) = st.item_dto(&pid) {
-                                let _ = app2.emit("app://add-items", vec![dto]);
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("[pdf] 第 {} 页渲染失败: {e}", page + 1);
-                        }
-                    }
-                }
-            });
-        }
-
-        Ok(state.item_dto(&id1).expect("刚插入的条目"))
+        Ok(state.item_dto(&id).expect("刚插入的条目"))
     } else {
         // ---- 普通图片 ----
         let id = uuid::Uuid::new_v4().simple().to_string();
