@@ -69,6 +69,7 @@ impl AppCtx {
             added_at: item.added_at,
             media_token: item.media_token,
             thumb_token: item.thumb_token,
+            can_extract: item.can_extract,
         })
     }
 
@@ -260,6 +261,7 @@ pub fn run() {
             commands::pdf_render_page,
             commands::pdf_ocr_range,
             commands::pdf_export_merged,
+            commands::pdf_extract_all,
         ])
         .run(tauri::generate_context!())
         .expect("QPP Studio 启动失败");

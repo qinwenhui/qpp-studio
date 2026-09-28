@@ -30,6 +30,7 @@ pub struct ImageItem {
     pub added_at: u64,
     pub media_token: String,
     pub thumb_token: String,
+    pub can_extract: bool,
 }
 
 pub fn now_ms() -> u64 {
@@ -91,6 +92,7 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
         w,
         h,
         origin: if is_pdf { "pdf".into() } else { origin.into() },
+        can_extract: is_pdf && crate::pdf::has_text_layer(&PDF_STORE.lock().unwrap().get(&id).map(|b| b.as_slice()).unwrap_or(&[])),
         added_at: now_ms(),
         media_token,
         thumb_token: String::new(), // 识别后由 item-done 事件带回

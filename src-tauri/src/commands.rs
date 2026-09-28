@@ -429,6 +429,7 @@ pub async fn history_reopen(app: AppHandle, id: String) -> Result<ItemOutcomeDto
             added_at: entry.at,
             media_token,
             thumb_token,
+            can_extract: false,
         };
         let dto = ImageItemDto {
             id: item.id.clone(),
@@ -440,6 +441,7 @@ pub async fn history_reopen(app: AppHandle, id: String) -> Result<ItemOutcomeDto
             added_at: item.added_at,
             media_token: item.media_token.clone(),
             thumb_token: item.thumb_token.clone(),
+            can_extract: item.can_extract,
         };
         state.register_item(item);
         Ok(ItemOutcomeDto {
@@ -644,6 +646,7 @@ pub async fn pdf_ocr_range(
                     .unwrap_or(0),
                 media_token: thumb_token.clone(), // 用缩略图令牌做显示
                 thumb_token,
+                can_extract: false,
             };
             state.register_item(item);
             ids.push(pid);
@@ -753,4 +756,149 @@ pub fn pdf_export_merged(
         }
         _ => Err("不支持的格式".into()),
     }
+}
+
+/// PDF 文本直提(跳过 OCR):从文本层提取全部页,毫秒级返回。
+/// 仅对数字原生 PDF 有效(有文本层)。
+#[tauri::command]
+pub async fn pdf_extract_all(
+    app: AppHandle,
+    id: String,
+) -> Result<Vec<crate::dto::PdfExtractedPageDto>, String> {
+    let bytes = crate::ingest::PDF_STORE
+        .lock()
+        .unwrap()
+        .get(&id)
+        .cloned()
+        .ok_or("不是 PDF 条目或已释放")?;
+
+    let total = crate::pdf::page_count(&bytes)?;
+    let has_text = crate::pdf::has_text_layer(&bytes);
+    if !has_text {
+        return Err("此 PDF 没有文本层(扫描件),请使用 OCR 识别".into());
+    }
+
+    let state = app.state::<AppCtx>();
+    let parent_name = {
+        let items = state.items.read().unwrap();
+        items
+            .get(&id)
+            .map(|i| i.name.clone())
+            .unwrap_or_else(|| "PDF".into())
+    };
+
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app2.state::<AppCtx>();
+        let mut results = Vec::new();
+
+        for page in 0..total {
+            let lines = crate::pdf::extract_text_lines(&bytes, page, crate::pdf::DPI_VIEW)
+                .unwrap_or_default();
+
+            let text: Vec<String> = lines
+                .iter()
+                .map(|(t, _, _)| t.clone())
+                .collect();
+
+            let full_text = text.join("
+");
+            results.push(crate::dto::PdfExtractedPageDto {
+                page: page + 1,
+                text: full_text,
+                line_count: lines.len() as u32,
+            });
+        }
+
+        // 同时写入识别记录(每页一个条目,和 OCR 批量结果一致)
+        for (page_idx, result) in results.iter().enumerate() {
+            let pid = uuid::Uuid::new_v4().simple().to_string();
+            let display_name = format!("{} · 第{}页(直提)", parent_name, page_idx + 1);
+
+            let thumb_path = {
+                // 渲染缩略图
+                match crate::pdf::render_page(&bytes, page_idx as u32, crate::pdf::DPI_THUMB) {
+                    Ok((w, h, rgb)) => {
+                        crate::thumb::make_thumb_from_rgb(w, h, &rgb, &pid, &state.dirs.thumbs)
+                            .unwrap_or_default()
+                    }
+                    Err(_) => std::path::PathBuf::new(),
+                }
+            };
+            let thumb_token = if thumb_path.as_os_str().len() > 0 {
+                state.media.register(thumb_path, "image/jpeg")
+            } else {
+                String::new()
+            };
+
+            // 构造 OcrResultDto(置信度全部 1.0,无 timings)
+            let text_lines: Vec<crate::dto::TextLineDto> = crate::pdf::extract_text_lines(
+                &bytes,
+                page_idx as u32,
+                crate::pdf::DPI_VIEW,
+            )
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(t, c, pts)| crate::dto::TextLineDto {
+                text: t,
+                confidence: c,
+                rotation: 0,
+                pts,
+                chars: vec![],
+                retried: false,
+            })
+            .collect();
+
+            let outcome = crate::dto::OcrOutcomeDto {
+                ok: true,
+                error: None,
+                result: Some(crate::dto::OcrResultDto {
+                    lines: text_lines,
+                    work_w: 0,
+                    work_h: 0,
+                    num_boxes: 0,
+                    num_merged: 0,
+                    num_decluttered: 0,
+                    num_det_retried: 0,
+                    num_flipped: 0,
+                    num_unread: 0,
+                    timings: crate::dto::TimingsDto {
+                        det_pre_ms: 0.0, det_infer_ms: 0.0, det_post_ms: 0.0,
+                        crop_ms: 0.0, cls_ms: 0.0, rec_pre_ms: 0.0, rec_infer_ms: 0.0,
+                        rec_post_ms: 0.0, total_ms: 0.0,
+                    },
+                }),
+            };
+
+            // 渲染全尺寸图供画布显示
+            let (vw, vh, _vrgb) = crate::pdf::render_page(
+                &bytes, page_idx as u32, crate::pdf::DPI_VIEW,
+            )
+            .unwrap_or((0, 0, vec![]));
+
+            let item = crate::ingest::ImageItem {
+                id: pid.clone(),
+                name: display_name,
+                path: std::path::PathBuf::from(&id),
+                w: vw,
+                h: vh,
+                origin: "pdf-page".into(),
+                added_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+                media_token: thumb_token.clone(),
+                thumb_token,
+                can_extract: false,
+            };
+            state.register_item(item);
+            crate::batch::finalize(&app2, &pid, &outcome, None);
+        }
+
+        let _ = app2.emit("batch://done", ());
+        Ok(results)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e: String| e)
 }

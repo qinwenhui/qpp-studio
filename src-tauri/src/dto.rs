@@ -84,6 +84,9 @@ pub struct ImageItemDto {
     /// media:// 协议的访问令牌
     pub media_token: String,
     pub thumb_token: String,
+    /// PDF 有文本层时可直提(跳过 OCR)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub can_extract: bool,
 }
 
 /// 引擎状态。
@@ -280,4 +283,13 @@ pub struct PdfPageDto {
     pub w: u32,
     pub h: u32,
     pub page: u32,
+}
+
+/// PDF 文本直提结果(每页)。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfExtractedPageDto {
+    pub page: u32,
+    pub text: String,
+    pub line_count: u32,
 }

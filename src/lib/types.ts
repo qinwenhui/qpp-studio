@@ -58,6 +58,8 @@ export interface ImageItem {
   addedAt: number;
   mediaToken: string;
   thumbToken: string;
+  /** PDF 有文本层时可直提 */
+  canExtract?: boolean;
 }
 
 export interface ItemOutcome {
@@ -149,4 +151,5 @@ export interface ItemState {
   outcome?: OcrOutcome;
   /** PDF 专属:总页数与当前显示页(非 PDF 为 null) */
   pdfPages?: { count: number; current: number };
+  canExtract?: boolean;
 }

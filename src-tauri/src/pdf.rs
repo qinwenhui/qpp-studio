@@ -90,3 +90,52 @@ pub fn has_text_layer(bytes: &[u8]) -> bool {
 pub fn read_pdf(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("读取 PDF 失败: {e}"))
 }
+
+/// 从 PDF 文本层直接提取(跳过 OCR,毫秒级)。
+/// 返回 (text, confidence, [四点坐标]) — 和 OCR TextLine 对齐。
+/// 坐标为全宽近似框(精确定位需要字符矩阵,此处取可用性优先)。
+pub fn extract_text_lines(
+    bytes: &[u8],
+    page_index: u32,
+    dpi: u16,
+) -> Result<Vec<(String, f32, [[f32; 2]; 4])>, String> {
+    let doc = PDFIUM
+        .load_pdf_from_byte_slice(bytes, None)
+        .map_err(|e| format!("PDF 加载失败: {e}"))?;
+    let page = doc
+        .pages()
+        .get(page_index as i32)
+        .map_err(|e| format!("第 {} 页不存在: {e}", page_index + 1))?;
+
+    let page_w = page.width().value * dpi as f32 / 72.0;
+    let page_h = page.height().value * dpi as f32 / 72.0;
+
+    let text = page
+        .text()
+        .map_err(|e| format!("文本提取失败: {e}"))?;
+
+    let all = text.all();
+    let mut lines = Vec::new();
+    let mut y = 0f32;
+    for line in all.lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            let line_h = 16f32; // 近似行高,不参与精确命中
+            lines.push((
+                trimmed.to_string(),
+                1.0,
+                [
+                    [0.0, y + line_h],
+                    [page_w, y + line_h],
+                    [page_w, y],
+                    [0.0, y],
+                ],
+            ));
+            y += line_h + 4.0;
+        } else {
+            y += 8.0;
+        }
+    }
+    let _ = page_h;
+    Ok(lines)
+}
