@@ -28,6 +28,25 @@
     return Math.min((vw - 56) / page.w, (vh - 56) / page.h);
   });
 
+  /** 字符宽度系数(以 em 为单位):CJK≈1 格,数字/字母约 0.58,空格 0.3 */
+  function charUnits(ch: string): number {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp === 0x20) {
+      return 0.3;
+    } else if (
+      (cp >= 0x2e80 && cp <= 0x9fff) ||
+      (cp >= 0x3400 && cp <= 0x4dbf) ||
+      (cp >= 0xf900 && cp <= 0xfaff) ||
+      (cp >= 0xff01 && cp <= 0xff60) ||
+      (cp >= 0x3000 && cp <= 0x303f) ||
+      (cp >= 0x2010 && cp <= 0x2027)
+    ) {
+      return 1.02;
+    } else {
+      return 0.58;
+    }
+  }
+
   /** 每行的纸面布局:外接框 + 逐字坐标(engine 2307909)或估算兜底。 */
   const layout = $derived.by(() => {
     return lines.map((l, i) => {
@@ -71,13 +90,27 @@
           .map((b) => (vertical ? b.x1 - b.x0 : b.y1 - b.y0))
           .sort((a, b) => a - b);
         const med = shorts.length ? shorts[shorts.length >> 1] : (vertical ? w : h);
-        cfs = Math.max(3, med * 0.86);
+        cfs = med * 0.86;
+        // 字号还必须被"相邻字符起点间距"约束:每字步进≈字号×宽度系数,
+        // 大于间距时相邻字符会重叠(中文夹数字/字母的行最常见)。
+        // 取全部约束的低分位,个别贴脸的坏盒不至于把整行压到看不清。
+        const pitches: number[] = [];
+        for (let k = 0; k + 1 < boxes.length; k++) {
+          const pitch = vertical ? boxes[k + 1].y0 - boxes[k].y0 : boxes[k + 1].x0 - boxes[k].x0;
+          const u = charUnits(boxes[k].text);
+          if (pitch > 1 && u > 0) pitches.push(pitch / u);
+        }
+        if (pitches.length) {
+          pitches.sort((a, b) => a - b);
+          cfs = Math.min(cfs, pitches[Math.min(pitches.length - 1, pitches.length >> 3)]);
+        }
+        cfs = Math.max(3, cfs);
         for (const b of boxes) {
           chars.push({
             text: b.text,
-            // 横排:左缘取 x0,垂直按字符盒中心对齐统一字号;竖排反之
-            x: vertical ? (b.x0 + b.x1) / 2 - cfs / 2 - x : b.x0 - x,
-            y: vertical ? b.y0 - y : (b.y0 + b.y1) / 2 - cfs / 2 - y,
+            // 字符盒原点定位;span 定宽高 + flex 居中,字形落在盒心
+            x: b.x0 - x,
+            y: b.y0 - y,
             w: Math.max(2, b.x1 - b.x0),
             h: Math.max(2, b.y1 - b.y0),
             space: b.text === ' ',
@@ -90,23 +123,7 @@
 
       // 估算兜底路径(引擎无 chars 时):字号需保证"字数×字宽 ≤ 框宽"
       let units = 0;
-      for (const ch of l.text) {
-        const cp = ch.codePointAt(0) ?? 0;
-        if (cp === 0x20) {
-          units += 0.3;
-        } else if (
-          (cp >= 0x2e80 && cp <= 0x9fff) ||
-          (cp >= 0x3400 && cp <= 0x4dbf) ||
-          (cp >= 0xf900 && cp <= 0xfaff) ||
-          (cp >= 0xff01 && cp <= 0xff60) ||
-          (cp >= 0x3000 && cp <= 0x303f) ||
-          (cp >= 0x2010 && cp <= 0x2027)
-        ) {
-          units += 1.02;
-        } else {
-          units += 0.58;
-        }
-      }
+      for (const ch of l.text) units += charUnits(ch);
       const fsBox = (vertical ? w : h) * 0.82;
       const fsFit = units > 0 ? (vertical ? h : w) / units : fsBox;
       const fs = Math.max(4, Math.min(fsBox, fsFit));
@@ -259,7 +276,7 @@
                   <span
                     class="ch"
                     class:sp={c.space}
-                    style="left:{c.x}px; top:{c.y}px; font-size:{l.cfs}px"
+                    style="left:{c.x}px; top:{c.y}px; width:{c.w}px; height:{c.h}px; font-size:{l.cfs}px"
                   >{c.text}</span>
                 {/each}
               {:else}{l.text}{/if}
