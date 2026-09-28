@@ -105,15 +105,13 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "PDF".into());
 
-        // 存 PDF 元信息(后台 OCR 由 pdf_ocr_range 命令负责,不在入库时触发)
-        let bytes_ref = PDF_STORE.lock().unwrap();
-        let bytes_for_render = bytes_ref.get(&id).cloned().unwrap_or_default();
-        drop(bytes_ref);
+        // 存元信息(先存再渲染,bytes 从变量直接用)
+        PDF_STORE.lock().unwrap().insert(id.clone(), bytes.clone());
         PDF_PAGES.lock().unwrap().insert(id.clone(), (count, 0));
 
-        // 同步渲染第 1 页(用户立刻看到内容)
+        // 同步渲染第 1 页
         let (png_path, w, h, media_token, thumb_token) =
-            render_pdf_page_to_item(app, &bytes_for_render, 0, &id)?;
+            render_pdf_page_to_item(app, &bytes, 0, &id)?;
         let item = ImageItem {
             id: id.clone(),
             name: file_name,
