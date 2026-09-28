@@ -73,4 +73,6 @@ export const api = {
     invoke<PdfPage>('pdf_render_page', { id, page, dpi }),
   pdfOcrRange: (id: string, startPage: number, endPage: number) =>
     invoke<void>('pdf_ocr_range', { id, startPage, endPage }),
+  pdfExportMerged: (id: string, fmt: 'txt' | 'json') =>
+    invoke<string>('pdf_export_merged', { parentId: id, fmt }),
 };

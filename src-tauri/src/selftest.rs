@@ -368,6 +368,26 @@ fn run(app: AppHandle) {
     println!("[selftest] history entries: {}", list.len());
     state.history.flush_if_dirty();
 
+    // 7b) PDF 渲染验证(如果测试 PDF 存在)
+    let test_pdf = std::path::Path::new("D:/qinwh/idea-2026.2.1.win/help/ReferenceCard.pdf");
+    if test_pdf.exists() {
+        blog!("[selftest] PDF 测试: {}", test_pdf.display());
+        match std::fs::read(test_pdf) {
+            Ok(bytes) => {
+                match crate::pdf::page_count(&bytes) {
+                    Ok(n) => blog!("[selftest] PDF 页数: {}", n),
+                    Err(e) => blog!("[selftest] PDF 页数失败: {}", e),
+                }
+                blog!("[selftest] PDF 文本层: {}", crate::pdf::has_text_layer(&bytes));
+                match crate::pdf::render_page(&bytes, 0, crate::pdf::DPI_OCR) {
+                    Ok((w, h, rgb)) => blog!("[selftest] PDF 首页渲染: {}x{} ({}KB)", w, h, rgb.len() / 1024),
+                    Err(e) => blog!("[selftest] PDF 渲染失败: {}", e),
+                }
+            }
+            Err(e) => blog!("[selftest] PDF 读取失败: {}", e),
+        }
+    }
+
     // 8) 留 12s 给外部截屏取证,然后退出
     std::thread::sleep(Duration::from_millis(12000));
 

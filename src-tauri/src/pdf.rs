@@ -14,7 +14,7 @@ pub const DPI_VIEW: u16 = 150;
 pub const DPI_OCR: u16 = 200;
 
 lazy_static::lazy_static! {
-    static ref PDFIUM: Pdfium = Pdfium::default();
+    static ref PDFIUM: Pdfium = Pdfium::new(Pdfium::bind_to_system_library().expect("PDFium 库未找到"));
 }
 
 /// 探测 PDF 页数(只读元数据,不解码像素)。

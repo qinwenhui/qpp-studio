@@ -40,7 +40,7 @@ uuid = { version = "1", features = ["v4"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
 # 批量并发信号量（运行时由 tauri 提供）
 tokio = { version = "1", features = ["sync"] }
-pdfium-render = { version = "0.9.4", features = ["static"] }
+pdfium-render = "0.9"
 lazy_static = "1.5.0"
 
 [profile.release]

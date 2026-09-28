@@ -259,6 +259,7 @@ pub fn run() {
             commands::pdf_page_info,
             commands::pdf_render_page,
             commands::pdf_ocr_range,
+            commands::pdf_export_merged,
         ])
         .run(tauri::generate_context!())
         .expect("QPP Studio 启动失败");

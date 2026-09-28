@@ -676,3 +676,81 @@ pub async fn pdf_ocr_range(
     .map_err(|e| e.to_string())?
     .map_err(|e| e)
 }
+
+/// 合并 PDF 识别结果导出(按页序拼接,带页码分隔)。
+#[tauri::command]
+pub fn pdf_export_merged(
+    state: State<AppCtx>,
+    parent_id: String,
+    fmt: String,
+) -> Result<String, String> {
+    let items = state.items.read().unwrap();
+    let mut pages: Vec<(&String, &crate::ingest::ImageItem)> = items
+        .iter()
+        .filter(|(_, it)| it.origin == "pdf-page" && it.path.to_str() == Some(parent_id.as_str()))
+        .map(|(k, v)| (k, v))
+        .collect();
+    if pages.is_empty() {
+        return Err("没有已识别的页面".into());
+    }
+    let order = state.order.read().unwrap();
+    pages.sort_by_key(|(id, _)| order.iter().position(|x| x == *id).unwrap_or(usize::MAX));
+
+    let parent_name = items
+        .get(&parent_id)
+        .map(|i| i.name.clone())
+        .unwrap_or_else(|| "PDF".into());
+
+    match fmt.as_str() {
+        "txt" => {
+            let mut out = String::new();
+            out.push_str(&format!("# {} — OCR 全文
+
+", parent_name));
+            for (pid, it) in &pages {
+                if let Some(entry) = state.history.get(pid) {
+                    let page_label = it.name.rsplit('·').next().unwrap_or("").trim();
+                    out.push_str(&format!("--- {} ---
+", page_label));
+                    if let Some(r) = &entry.outcome.result {
+                        for line in &r.lines {
+                            if !line.text.is_empty() {
+                                out.push_str(&line.text);
+                                out.push('\n');
+                            }
+                        }
+                    }
+                    out.push('\n');
+                }
+            }
+            Ok(out)
+        }
+        "json" => {
+            let mut page_results: Vec<serde_json::Value> = Vec::new();
+            for (pid, it) in &pages {
+                if let Some(entry) = state.history.get(pid) {
+                    if let Some(r) = &entry.outcome.result {
+                        let page_label = it.name.rsplit('·').next().unwrap_or("").trim();
+                        page_results.push(serde_json::json!({
+                            "page": page_label,
+                            "text": r.lines.iter()
+                                .filter(|l| !l.text.is_empty())
+                                .map(|l| l.text.as_str())
+                                .collect::<Vec<_>>()
+                                .join("
+"),
+                            "lineCount": r.lines.len(),
+                            "totalMs": r.timings.total_ms,
+                        }));
+                    }
+                }
+            }
+            let json = serde_json::json!({
+                "source": parent_name,
+                "pages": page_results,
+            });
+            serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
+        }
+        _ => Err("不支持的格式".into()),
+    }
+}

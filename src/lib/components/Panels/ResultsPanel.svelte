@@ -67,6 +67,18 @@
     }
   }
 
+  async function exportPdf(fmt: 'txt' | 'json') {
+    if (!active || active.item.origin !== 'pdf') return;
+    try {
+      const content = await api.pdfExportMerged(active.item.id, fmt);
+      const base = active.item.name.replace(/\.[^.]+$/, '');
+      const path = await api.exportContent(content, fmt, `${base}-全文.${fmt}`);
+      toast('success', `已导出: ${path}`);
+    } catch (e) {
+      if (String(e) !== '已取消') toast('error', String(e));
+    }
+  }
+
   async function cancelBatch() {
     await api.batchCancel();
     toast('info', '已请求取消,进行中的图片会完成当前张');
@@ -181,6 +193,12 @@
         <Icon name="download" size={14} />
         JSON
       </button>
+      {#if active?.item.origin === 'pdf'}
+        <button class="btn" onclick={() => exportPdf('txt')} title="按页序合并全部已识别页">
+          <Icon name="layers" size={14} />
+          合并 TXT
+        </button>
+      {/if}
       <span class="ms" title="引擎端到端耗时">
         {active?.outcome?.result?.timings?.totalMs?.toFixed(1) ?? '—'} ms
       </span>
