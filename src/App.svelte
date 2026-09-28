@@ -11,6 +11,7 @@
   import IconRail from '$lib/components/IconRail.svelte';
   import ToolBar from '$lib/components/ToolBar.svelte';
   import CanvasStage from '$lib/components/Canvas/CanvasStage.svelte';
+  import PdfPageNav from '$lib/components/PdfPageNav.svelte';
   import Drawer from '$lib/components/Drawer.svelte';
   import ThumbStrip from '$lib/components/ThumbStrip.svelte';
   import DropOverlay from '$lib/components/DropOverlay.svelte';
@@ -190,6 +191,7 @@
         ></div>
         <RightPane />
       </div>
+      <PdfPageNav />
       <ThumbStrip />
     </section>
   </div>

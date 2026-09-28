@@ -8,6 +8,7 @@ import type {
   InitInfo,
   ItemOutcome,
   OcrOutcome,
+  PdfPage,
   Settings,
   ShotMonitor,
 } from './types';
@@ -66,4 +67,10 @@ export const api = {
   copyText: (text: string) => invoke<void>('copy_text', { text }),
   revealPath: (path: string) => invoke<void>('reveal_path', { path }),
   openUrl: (url: string) => invoke<void>('open_url', { url }),
+
+  pdfPageInfo: (id: string) => invoke<[number, number] | null>('pdf_page_info', { id }),
+  pdfRenderPage: (id: string, page: number, dpi?: number) =>
+    invoke<PdfPage>('pdf_render_page', { id, page, dpi }),
+  pdfOcrRange: (id: string, startPage: number, endPage: number) =>
+    invoke<void>('pdf_ocr_range', { id, startPage, endPage }),
 };

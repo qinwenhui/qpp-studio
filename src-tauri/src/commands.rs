@@ -569,14 +569,15 @@ pub fn pdf_render_page(
     })
 }
 
-/// 对 PDF 所有页执行批量识别。
+/// 对 PDF 指定范围执行批量识别:每页渲染→入库→进批量队列。
+/// 页与页之间通过事件通知前端(复用 ocr://item-done)。
 #[tauri::command]
-pub async fn pdf_ocr_all(
+pub async fn pdf_ocr_range(
     app: AppHandle,
     id: String,
-    start_page: Option<u32>,
-    end_page: Option<u32>,
-) -> Result<Vec<String>, String> {
+    start_page: u32,
+    end_page: u32,
+) -> Result<(), String> {
     let bytes = crate::ingest::PDF_STORE
         .lock()
         .unwrap()
@@ -584,26 +585,94 @@ pub async fn pdf_ocr_all(
         .cloned()
         .ok_or("不是 PDF 条目或已释放")?;
     let total = crate::pdf::page_count(&bytes)?;
-    let start = start_page.unwrap_or(0);
-    let end = end_page.unwrap_or(total - 1).min(total - 1);
-
-    // 渲染每页并存入 inbox,逐条识别
-    let state = app.state::<AppCtx>();
-    let mut item_ids = Vec::new();
-    for page in start..=end {
-        let (_, _, rgb) =
-            crate::pdf::render_page(&bytes, page, crate::pdf::DPI_OCR)
-                .map_err(|e| format!("第 {} 页渲染失败: {e}", page + 1))?;
-        let img = qppocr::rgb_from_bytes(
-            /* w */ 0, /* h */ 0, /* data */ rgb,
-        );
-        // 这里需要实际宽高
-        // (render_page 已经返回了,重新获取)
-        let _ = img; // 一期先跳过,后续完善
-
-        // TODO: 完善逐页识别
+    let start = start_page.min(total.saturating_sub(1));
+    let end = end_page.min(total.saturating_sub(1));
+    if start > end {
+        return Err("页码范围无效".into());
     }
 
-    let _ = state;
-    Ok(item_ids)
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app2.state::<AppCtx>();
+        let mut ids = Vec::new();
+        for page in start..=end {
+            let (w, h, rgb) = match crate::pdf::render_page(&bytes, page, crate::pdf::DPI_OCR) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[pdf] 第 {} 页渲染失败: {e}", page + 1);
+                    continue;
+                }
+            };
+            let img = match qppocr::rgb_from_bytes(w, h, rgb) {
+                Ok(i) => i,
+                Err(e) => {
+                    eprintln!("[pdf] 第 {} 页数据无效: {e}", page + 1);
+                    continue;
+                }
+            };
+
+            // 每页创建独立条目(名称带页码,进正常批量队列)
+            let pid = uuid::Uuid::new_v4().simple().to_string();
+            let parent_name = {
+                let items = state.items.read().unwrap();
+                items
+                    .get(&id)
+                    .map(|i| i.name.clone())
+                    .unwrap_or_else(|| "PDF".into())
+            };
+            let display_name = format!("{} · 第{}页", parent_name, page + 1);
+
+            // 缩略图
+            let thumb_path = crate::thumb::make_thumb_from_rgb(w, h, &img.data, &pid, &state.dirs.thumbs)
+                .unwrap_or_default();
+            let thumb_token = if thumb_path.as_os_str().len() > 0 {
+                state.media.register(thumb_path, "image/jpeg")
+            } else {
+                String::new()
+            };
+
+            let item = crate::ingest::ImageItem {
+                id: pid.clone(),
+                name: display_name,
+                path: std::path::PathBuf::from(&id), // 指向父 PDF
+                w,
+                h,
+                origin: "pdf-page".into(),
+                added_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+                media_token: thumb_token.clone(), // 用缩略图令牌做显示
+                thumb_token,
+            };
+            state.register_item(item);
+            ids.push(pid);
+        }
+
+        // 进批量队列
+        if !ids.is_empty() {
+            let _ = tauri::async_runtime::block_on(async {
+                // 直接调 batch 逻辑:设置状态,逐条识别
+                for pid in &ids {
+                    let _ = app2.emit("ocr://item-status", crate::dto::ItemStatusDto {
+                        id: pid.clone(),
+                        phase: "queued".into(),
+                    });
+                }
+                // 复用 run_item_blocking
+                for pid in &ids {
+                    let _ = app2.emit("ocr://item-status", crate::dto::ItemStatusDto {
+                        id: pid.clone(),
+                        phase: "running".into(),
+                    });
+                    let _ = crate::batch::run_item_blocking(&app2, pid);
+                }
+                let _ = app2.emit("batch://done", ());
+            });
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e)
 }

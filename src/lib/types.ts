@@ -54,7 +54,7 @@ export interface ImageItem {
   path: string;
   w: number;
   h: number;
-  origin: 'file' | 'clipboard' | 'screenshot';
+  origin: 'file' | 'clipboard' | 'screenshot' | 'pdf';
   addedAt: number;
   mediaToken: string;
   thumbToken: string;
@@ -90,6 +90,20 @@ export interface Settings {
   upscale: number;
   /** 截图时隐藏主窗口(工具栏截图按钮右键选择;默认不隐藏) */
   shotHide: boolean;
+}
+
+/** PDF 页面信息 */
+export interface PdfPageInfo {
+  pageCount: number;
+  currentPage: number;
+}
+
+/** PDF 页面渲染结果 */
+export interface PdfPage {
+  mediaToken: string;
+  w: number;
+  h: number;
+  page: number;
 }
 
 export interface InitInfo {
@@ -133,4 +147,6 @@ export interface ItemState {
   item: ImageItem;
   phase: Phase;
   outcome?: OcrOutcome;
+  /** PDF 专属:总页数与当前显示页(非 PDF 为 null) */
+  pdfPages?: { count: number; current: number };
 }

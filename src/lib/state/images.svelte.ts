@@ -43,6 +43,19 @@ export async function addItems(list: ImageItem[]) {
     setView('records');
   }
   const ids = list.map((i) => i.id);
+  // PDF 条目:异步探测页数,翻页时按需渲染
+  for (const it of list) {
+    if (it.origin === 'pdf') {
+      void api.pdfPageInfo(it.id).then((info) => {
+        if (info) {
+          const st = imagesStore.items.find((x) => x.item.id === it.id);
+          if (st) {
+            st.pdfPages = { count: info[0], current: info[1] };
+          }
+        }
+      });
+    }
+  }
   await recognize(ids);
 }
 
