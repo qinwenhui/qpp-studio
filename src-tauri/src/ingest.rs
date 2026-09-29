@@ -71,7 +71,9 @@ pub fn cleanup_pdf(state: &crate::AppCtx, id: &str) {
         for e in rd.flatten() {
             let name = e.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with(&prefix) && name.ends_with(".png") {
+            let is_page_cache = name.starts_with(&prefix)
+                && (name.ends_with(".png") || name.ends_with(".jpg"));
+            if is_page_cache {
                 let _ = std::fs::remove_file(e.path());
             }
         }

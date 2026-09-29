@@ -545,7 +545,70 @@ pub fn pdf_page_info(id: String) -> Option<(u32, u32)> {
     crate::ingest::PDF_PAGES.lock().unwrap().get(&id).copied()
 }
 
+/// 渲染一页到 inbox 缓存文件(JPEG q90——编码比 PNG 快数倍,显示与重识别都够用)。
+fn render_view_page_to_file(
+    app: &AppHandle,
+    id: &str,
+    page: u32,
+) -> Result<(PathBuf, u32, u32), String> {
+    let state = app.state::<AppCtx>();
+    let bytes = crate::ingest::PDF_STORE
+        .lock()
+        .unwrap()
+        .get(id)
+        .cloned()
+        .ok_or("PDF 条目不存在")?;
+    let (w, h, rgb) = crate::pdf::render_page(&bytes, page, crate::pdf::DPI_VIEW)?;
+    let path = state.dirs.inbox.join(format!("{id}_p{page}.jpg"));
+    let img = image::RgbImage::from_raw(w, h, rgb).ok_or("渲染数据无效")?;
+    let f = std::fs::File::create(&path).map_err(|e| format!("保存失败: {e}"))?;
+    let mut wtr = std::io::BufWriter::new(f);
+    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut wtr, 90);
+    img.write_with_encoder(enc)
+        .map_err(|e| format!("编码失败: {e}"))?;
+    Ok((path, w, h))
+}
+
+lazy_static::lazy_static! {
+    /// 预取中的 (条目, 页),防重复起线程
+    static ref PREFETCH_INFLIGHT: std::sync::Mutex<std::collections::HashSet<(String, u32)>> =
+        std::sync::Mutex::new(std::collections::HashSet::new());
+}
+
+/// 后台预渲染下一页:只写缓存文件,不注册令牌/不发事件——翻到该页时
+/// pdf_render_page 走缓存快路径,线性翻页零等待。
+fn prefetch_view_page(app: &AppHandle, id: &str, page: u32) {
+    let count = crate::ingest::PDF_PAGES
+        .lock()
+        .unwrap()
+        .get(id)
+        .map(|(c, _)| *c)
+        .unwrap_or(0);
+    if page >= count {
+        return;
+    }
+    let state = app.state::<AppCtx>();
+    if state.dirs.inbox.join(format!("{id}_p{page}.jpg")).exists() {
+        return; // 已有缓存
+    }
+    if !PREFETCH_INFLIGHT
+        .lock()
+        .unwrap()
+        .insert((id.to_string(), page))
+    {
+        return; // 已在预取
+    }
+    let app = app.clone();
+    let id = id.to_string();
+    std::thread::spawn(move || {
+        let _ = render_view_page_to_file(&app, &id, page);
+        PREFETCH_INFLIGHT.lock().unwrap().remove(&(id, page));
+    });
+}
+
 /// 渲染 PDF 指定页为图像(通过 media:// 协议返回令牌)。
+/// 快路径:该页已渲染过(inbox 缓存文件在)→ 只读尺寸+注册令牌,毫秒级;
+/// 慢路径:渲染 + JPEG 编码,随后后台预取下一页。
 #[tauri::command]
 pub async fn pdf_render_page(
     app: AppHandle,
@@ -553,46 +616,40 @@ pub async fn pdf_render_page(
     page: u32,
     _dpi: Option<u16>,
 ) -> Result<crate::dto::PdfPageDto, String> {
-    // 翻页:从 PDF 字节渲染指定页 → 落盘 PNG → 更新条目 path/媒体令牌 → 前端画布刷新
     let app2 = app.clone();
     let id2 = id.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let bytes = crate::ingest::PDF_STORE
-            .lock().unwrap()
-            .get(&id2).cloned()
-            .ok_or("PDF 条目不存在")?;
         let state = app2.state::<AppCtx>();
-        let (w, h, rgb) = crate::pdf::render_page(&bytes, page, crate::pdf::DPI_VIEW)?;
-        let png_path = state.dirs.inbox.join(format!("{id2}_p{page}.png"));
-        let img = image::RgbImage::from_raw(w, h, rgb)
-            .ok_or("渲染数据无效")?;
-        img.save_with_format(&png_path, image::ImageFormat::Png)
-            .map_err(|e| format!("保存失败: {e}"))?;
-        let token = state.media.register(png_path.clone(), "image/png");
+        // 快路径:jpg(新)或 png(旧会话遗留)缓存命中
+        let jpg = state.dirs.inbox.join(format!("{id2}_p{page}.jpg"));
+        let png = state.dirs.inbox.join(format!("{id2}_p{page}.png"));
+        let (path, w, h, mime) = if jpg.exists() {
+            let (w, h) = image::image_dimensions(&jpg).map_err(|e| format!("缓存读取失败: {e}"))?;
+            (jpg, w, h, "image/jpeg")
+        } else if png.exists() {
+            let (w, h) = image::image_dimensions(&png).map_err(|e| format!("缓存读取失败: {e}"))?;
+            (png, w, h, "image/png")
+        } else {
+            // 慢路径:渲染 + 编码落盘
+            render_view_page_to_file(&app2, &id2, page).map(|(p, w, h)| (p, w, h, "image/jpeg"))?
+        };
+        let token = state.media.register(path.clone(), mime);
         let token2 = token.clone();
         {
             let mut items = state.items.write().unwrap();
             if let Some(item) = items.get_mut(&id2) {
-                item.path = png_path;
+                item.path = path;
                 item.media_token = token;
                 item.w = w;
                 item.h = h;
             }
         }
-        // 同步该页的识别结果(后台 OCR 可能已完成)
+        // 同步该页的识别结果(识别可能已完成;带页号,前端丢弃晚到的非当前页)
         let page_outcome = {
             let results = crate::ingest::PDF_RESULTS.lock().unwrap();
             results.get(&id2).and_then(|m| m.get(&page)).cloned()
         };
         if let Some(outcome) = page_outcome {
-            let st = app2.state::<AppCtx>();
-            let mut items = st.items.write().unwrap();
-            if let Some(item) = items.get_mut(&id2) {
-                // 更新条目的 outcome(不通过 finalize,不走历史)
-                // 直接修改条目上的结果
-            }
-            drop(items);
-            // 发事件让前端更新结果面板(带页号,前端丢弃晚到的非当前页)
             let _ = app2.emit("ocr://item-done", crate::dto::ItemDoneDto {
                 id: id2.clone(),
                 outcome,
@@ -600,6 +657,8 @@ pub async fn pdf_render_page(
                 pdf_page: Some(page),
             });
         }
+        // 预取下一页:翻页方向上的下一击就是缓存命中
+        prefetch_view_page(&app2, &id2, page + 1);
         Ok(crate::dto::PdfPageDto { media_token: token2, w, h, page })
     })
     .await
