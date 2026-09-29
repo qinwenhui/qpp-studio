@@ -16,9 +16,10 @@ use qppocr::Tier;
 const GIB: u64 = 1 << 30;
 
 /// 单 worker 进程峰值内存预算(tiny/small);medium 模型太重不分治,无预算。
-/// 数值 = QPP_BENCH_PDF 采样峰值 RSS × 1.3 余量,待各档实测后校准。
-const WORKER_BUDGET_TINY: u64 = GIB * 7 / 10;
-const WORKER_BUDGET_SMALL: u64 = GIB * 6 / 5;
+/// tiny = QPP_BENCH_PDF 实测(35页/8×2):峰值 188MB × 1.3 余量 ≈ 0.24,取 0.25GiB;
+/// small 未经实测,按 tiny×2 估(模型 31MB vs 6.3MB,推理工作集同量级)。
+const WORKER_BUDGET_TINY: u64 = GIB / 4;
+const WORKER_BUDGET_SMALL: u64 = GIB / 2;
 
 /// 给 OS + 应用本体(UI/WebView/主进程引擎)预留的内存。
 fn mem_reserve(total: u64) -> u64 {
@@ -169,10 +170,14 @@ mod tests {
         assert_eq!((p.workers, p.threads_each), (2, 2));
         assert!(!p.clamped_by_mem);
 
-        // 小内存机 6G/small:want=4 但闸 (6-2)/1.2=3 → 压到 3,t=clamp(8/3)=2
-        let p = plan(&hw(8, 8, 6), Small, 0);
-        assert_eq!((p.workers, p.threads_each), (3, 2));
+        // 小内存机 3G/tiny(8P/16L):want=8 但闸 (3-2)/0.25=4 → 压到 4,t=clamp(16/4)=4
+        let p = plan(&hw(8, 16, 3), Tiny, 0);
+        assert_eq!((p.workers, p.threads_each), (4, 4));
         assert!(p.clamped_by_mem);
+        // small 实测前的保守预算 0.5G:6G 机闸 (6-2)/0.5=8,不约束 want=4
+        let p = plan(&hw(8, 8, 6), Small, 0);
+        assert_eq!((p.workers, p.threads_each), (4, 2));
+        assert!(!p.clamped_by_mem);
 
         // 内存不足以开任何一个 worker → 退化为不分治
         let p = plan(&hw(8, 8, 2), Tiny, 0);
@@ -187,8 +192,8 @@ mod tests {
         // 手动覆盖:优先于档位上限,仍受内存闸
         let p = plan(&hw(12, 18, 32), Tiny, 6);
         assert_eq!((p.workers, p.threads_each), (6, 3));
-        let p = plan(&hw(8, 8, 6), Small, 4);
-        assert_eq!(p.workers, 3);
+        let p = plan(&hw(8, 16, 3), Tiny, 8);
+        assert_eq!(p.workers, 4);
         assert!(p.clamped_by_mem);
 
         // 高端 16C/32T/tiny:K=min(16,8,16)=8, t=clamp(32/8)=4(总线程=32≈逻辑核)
