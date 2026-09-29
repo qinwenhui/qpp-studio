@@ -1,8 +1,10 @@
 //! PDF 支持:光栅化 + 页面探测。
 //!
 //! 使用 pdfium-render(封装 Google PDFium,Chrome 同款引擎)。
-//! static feature 编译期链接,无需外部 DLL。
-//! 每次渲染时从字节流重新打开——PDFium 内部走内存映射,开销可忽略。
+//! pdfium.dll 动态加载(exe 同目录/打包 resources);thread_safe feature 是
+//! 全局互斥锁——进程内多线程渲染是串行化的,渲染并行只能靠独立 worker 进程。
+//! 每次渲染时从字节流重新打开——PDFium 内部走内存映射,开销可忽略;
+//! 批量渲染用 load_doc + render_doc_page 复用一次解析。
 
 use std::path::Path;
 
@@ -17,24 +19,47 @@ lazy_static::lazy_static! {
     static ref PDFIUM: Pdfium = Pdfium::new(Pdfium::bind_to_system_library().expect("PDFium 库未找到"));
 }
 
+/// 从字节加载文档(worker 批量渲染复用,避免逐页重复解析)。
+pub fn load_doc<'a>(bytes: &'a [u8]) -> Result<PdfDocument<'a>, String> {
+    PDFIUM
+        .load_pdf_from_byte_slice(bytes, None)
+        .map_err(|e| format!("PDF 加载失败: {e}"))
+}
+
 /// 探测 PDF 页数(只读元数据,不解码像素)。
 pub fn page_count(bytes: &[u8]) -> Result<u32, String> {
-    let doc = PDFIUM
-        .load_pdf_from_byte_slice(bytes, None)
-        .map_err(|e| format!("PDF 加载失败: {e}"))?;
+    let doc = load_doc(bytes)?;
     Ok(doc.pages().len() as u32)
 }
 
-/// 渲染指定页,返回 (width, height, RGB 字节)。
+/// 每页点尺寸(1/72 英寸),不渲染像素——舰队分块的页权重探测用。
+pub fn page_sizes(bytes: &[u8]) -> Result<Vec<(f32, f32)>, String> {
+    let doc = load_doc(bytes)?;
+    let pages = doc.pages();
+    let mut sizes = Vec::with_capacity(pages.len() as usize);
+    for i in 0..pages.len() {
+        let page = pages
+            .get(i)
+            .map_err(|e| format!("第 {} 页读取失败: {e}", i + 1))?;
+        sizes.push((page.width().value, page.height().value));
+    }
+    Ok(sizes)
+}
+
+/// 点尺寸 × DPI → 像素数(LPT 分块权重)。
+pub fn page_weight(pt: (f32, f32), dpi: u16) -> u64 {
+    let w = (pt.0 * dpi as f32 / 72.0).max(1.0);
+    let h = (pt.1 * dpi as f32 / 72.0).max(1.0);
+    (w as u64) * (h as u64)
+}
+
+/// 渲染已加载文档的指定页,返回 (width, height, RGB 字节)。
 /// PDFium 输出 BGRA,这里转 RGB 供引擎使用。
-pub fn render_page(
-    bytes: &[u8],
+pub fn render_doc_page(
+    doc: &PdfDocument<'_>,
     page_index: u32,
     dpi: u16,
 ) -> Result<(u32, u32, Vec<u8>), String> {
-    let doc = PDFIUM
-        .load_pdf_from_byte_slice(bytes, None)
-        .map_err(|e| format!("PDF 加载失败: {e}"))?;
     let page = doc
         .pages()
         .get(page_index as i32)
@@ -45,14 +70,13 @@ pub fn render_page(
     let target_w = ((w_pt * dpi as f32 / 72.0) as i32).max(100);
     let max_h = ((h_pt * dpi as f32 / 72.0) as i32).max(100);
 
-    let render = page
+    let bitmap = page
         .render_with_config(
             &PdfRenderConfig::new()
                 .set_target_width(target_w)
                 .set_maximum_height(max_h),
         )
         .map_err(|e| format!("第 {} 页渲染失败: {e}", page_index + 1))?;
-    let bitmap = render;
     let w = bitmap.width() as u32;
     let h = bitmap.height() as u32;
 
@@ -67,9 +91,19 @@ pub fn render_page(
     Ok((w, h, rgb))
 }
 
+/// 渲染指定页(单次调用便捷入口 = 加载 + 渲染)。
+pub fn render_page(
+    bytes: &[u8],
+    page_index: u32,
+    dpi: u16,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let doc = load_doc(bytes)?;
+    render_doc_page(&doc, page_index, dpi)
+}
+
 /// 判断 PDF 是否包含文本层(数字原生,非扫描件)。
 pub fn has_text_layer(bytes: &[u8]) -> bool {
-    let Ok(doc) = PDFIUM.load_pdf_from_byte_slice(bytes, None) else {
+    let Ok(doc) = load_doc(bytes) else {
         return false;
     };
     let pages_to_check = doc.pages().len().min(3);
@@ -99,9 +133,7 @@ pub fn extract_text_lines(
     page_index: u32,
     dpi: u16,
 ) -> Result<Vec<(String, f32, [[f32; 2]; 4])>, String> {
-    let doc = PDFIUM
-        .load_pdf_from_byte_slice(bytes, None)
-        .map_err(|e| format!("PDF 加载失败: {e}"))?;
+    let doc = load_doc(bytes)?;
     let page = doc
         .pages()
         .get(page_index as i32)

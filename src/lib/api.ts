@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   EngineStatus,
   HistoryEntry,
+  HwInfo,
   ImageItem,
   InitInfo,
   ItemOutcome,
@@ -30,6 +31,7 @@ export function mediaUrl(token: string): string {
 export const api = {
   appInit: () => invoke<InitInfo>('app_init'),
   engineStatus: () => invoke<EngineStatus>('engine_status'),
+  hwInfo: () => invoke<HwInfo>('hw_info'),
 
   pickImages: () => invoke<ImageItem[]>('pick_images'),
   addFiles: (paths: string[]) => invoke<ImageItem[]>('add_files', { paths }),

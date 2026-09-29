@@ -111,6 +111,30 @@ pub struct InitInfoDto {
     pub platform: String,
 }
 
+/// hw_info 返回的并行策略(按当前 tier + workers_override 实时计算)。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanDto {
+    pub workers: usize,
+    pub threads_each: usize,
+    pub inproc_concurrency: usize,
+    /// 内存闸允许的最大 worker 数(u32::MAX = 内存未知不设限)
+    pub mem_cap: u32,
+    pub clamped_by_mem: bool,
+}
+
+/// hw_info 返回的硬件检测信息。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct HwInfoDto {
+    pub cpu_brand: String,
+    pub physical_cores: u32,
+    pub logical_cores: u32,
+    /// 总内存 GB(保留 1 位小数;0 = 探测失败)
+    pub total_mem_gb: f64,
+    pub plan: PlanDto,
+}
+
 /// 批量进度事件载荷。
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -129,6 +153,9 @@ pub struct ItemDoneDto {
     /// 搭识别便车生成的缩略图令牌（无则保持原状）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumb_token: Option<String>,
+    /// PDF 页任务的页号(图片为 None):前端据此丢弃"晚到的非当前页"结果
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pdf_page: Option<u32>,
 }
 
 /// 「图片 + 识别结果」组合：截图完成事件、历史重开、结果弹窗共用。

@@ -3,6 +3,7 @@
 use crate::dto::{
     EngineStatusDto, ImageItemDto, InitInfoDto, ItemOutcomeDto, OcrOutcomeDto, ShotMonitorDto,
 };
+use crate::dto;
 use crate::settings::{parse_preset, parse_tier, Settings};
 use crate::AppCtx;
 use std::path::PathBuf;
@@ -23,6 +24,27 @@ pub fn app_init(app: AppHandle, state: State<AppCtx>) -> InitInfoDto {
 #[tauri::command]
 pub fn engine_status(state: State<AppCtx>) -> EngineStatusDto {
     state.engine.status()
+}
+
+/// 硬件检测信息 + 当前并行策略(按设置里的 tier/workers_override 实时计算)。
+#[tauri::command]
+pub fn hw_info(state: State<AppCtx>) -> dto::HwInfoDto {
+    let settings = state.settings.read().unwrap();
+    let tier = parse_tier(&settings.tier).unwrap_or(qppocr::Tier::Tiny);
+    let p = crate::hw::plan(&state.hw, tier, settings.workers_override);
+    dto::HwInfoDto {
+        cpu_brand: state.hw.cpu_brand.clone(),
+        physical_cores: state.hw.physical_cores as u32,
+        logical_cores: state.hw.logical_cores as u32,
+        total_mem_gb: (state.hw.total_mem as f64 / 1_073_741_824.0 * 10.0).round() / 10.0,
+        plan: dto::PlanDto {
+            workers: p.workers,
+            threads_each: p.threads_each,
+            inproc_concurrency: p.inproc_concurrency,
+            mem_cap: p.mem_cap.min(u32::MAX as usize) as u32,
+            clamped_by_mem: p.clamped_by_mem,
+        },
+    }
 }
 
 #[tauri::command]
@@ -156,6 +178,12 @@ pub async fn batch_start(
     if state.batch.running.swap(true, Ordering::SeqCst) {
         return Err("已有批量任务在进行中".into());
     }
+    // PDF 舰队与图片批量共用 worker 预算,互斥执行。
+    // 先 swap(running) 再查 fleet_active,与 PDF 侧的先立旗再查 running 对称,无竞态窗口
+    if state.pdf.fleet_active.load(Ordering::SeqCst) {
+        state.batch.running.store(false, Ordering::SeqCst);
+        return Err("PDF 并行识别进行中,请稍后再试".into());
+    }
     state.batch.cancel.store(false, Ordering::SeqCst);
 
     // 收集 (id, path, 像素权重):批量期间条目不会被动(当前识别语义保证)
@@ -170,14 +198,12 @@ pub async fn batch_start(
     }
 
     // 大批量 + 档位允许 → 进程分治(每 worker 独立引擎,真正吃满核)
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(8);
-    let procs = crate::batch::worker_count(state.engine.spec().tier, cores);
-    if tasks.len() >= crate::batch::PROC_BATCH_MIN && procs > 0 {
+    let workers_override = state.settings.read().unwrap().workers_override;
+    let plan = crate::hw::plan(&state.hw, state.engine.spec().tier, workers_override);
+    if tasks.len() >= crate::batch::PROC_BATCH_MIN && plan.workers > 0 {
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            crate::batch::spawn_proc_batch(app, tasks);
+            crate::batch::spawn_proc_batch(app, tasks, plan);
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -186,15 +212,7 @@ pub async fn batch_start(
 
     // 小批量:进程内共享引擎并发(并发 run 在算子层部分重叠)
     let user_conc = state.settings.read().unwrap().batch_concurrency;
-    let conc = if user_conc == 0 {
-        // 自动:tiny 引擎轻,4 并发收益明显;small/medium 引擎重,2 为甜点
-        match state.engine.spec().tier {
-            qppocr::Tier::Tiny => 4,
-            _ => 2,
-        }
-    } else {
-        user_conc
-    };
+    let conc = if user_conc == 0 { plan.inproc_concurrency } else { user_conc };
     let sem = Arc::new(tokio::sync::Semaphore::new(conc.max(1)));
     *state.batch.semaphore.write().unwrap() = sem.clone();
     let cancel = state.batch.cancel.clone();
@@ -564,9 +582,7 @@ pub async fn pdf_render_page(
         // 同步该页的识别结果(后台 OCR 可能已完成)
         let page_outcome = {
             let results = crate::ingest::PDF_RESULTS.lock().unwrap();
-            results.get(&id2)
-                .and_then(|v| v.iter().find(|(p, _)| *p == page))
-                .map(|(_, o)| o.clone())
+            results.get(&id2).and_then(|m| m.get(&page)).cloned()
         };
         if let Some(outcome) = page_outcome {
             let st = app2.state::<AppCtx>();
@@ -576,11 +592,12 @@ pub async fn pdf_render_page(
                 // 直接修改条目上的结果
             }
             drop(items);
-            // 发事件让前端更新结果面板
+            // 发事件让前端更新结果面板(带页号,前端丢弃晚到的非当前页)
             let _ = app2.emit("ocr://item-done", crate::dto::ItemDoneDto {
                 id: id2.clone(),
                 outcome,
                 thumb_token: None,
+                pdf_page: Some(page),
             });
         }
         Ok(crate::dto::PdfPageDto { media_token: token2, w, h, page })
@@ -921,7 +938,7 @@ pub async fn pdf_extract_all(
                 can_extract: false,
             };
             state.register_item(item);
-            crate::batch::finalize(&app2, &pid, &outcome, None);
+            crate::batch::finalize(&app2, &pid, &outcome, None, None);
         }
 
         let _ = app2.emit("batch://done", ());

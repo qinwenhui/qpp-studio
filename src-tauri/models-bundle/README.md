@@ -1,6 +1,9 @@
 # models-bundle — 打包 staging 目录
 
-`tauri build` 会把本目录的 `models/` 映射进安装包（见 `tauri.conf.json` 的 `bundle.resources`）。
+`tauri build` 会把本目录的 `models/` 与 `pdfium.dll` 映射进安装包（见 `tauri.conf.json` 的 `bundle.resources`）。
+
+`pdfium.dll` 来自 bblanchon/pdfium-binaries（win-x64），升级时替换本文件并同步
+`target/debug/pdfium.dll`、`target/release/pdfium.dll`（dev 运行靠 exe 同目录搜索）。
 
 构建前运行 `python tools/stage-models.py` 从并排的 qppocr 仓库填充：
 

@@ -13,6 +13,7 @@ const DEFAULTS: Settings = {
   hotkey: 'ctrl+shift+o',
   modelsDir: undefined,
   batchConcurrency: 0,
+  workersOverride: 0,
   orientation: true,
   enhanceContrast: false,
   upscale: 1,

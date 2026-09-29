@@ -35,14 +35,18 @@ export async function addItems(list: ImageItem[]) {
     await api.removeItems(oldIds);
   }
   for (const item of list) {
-    imagesStore.items.push({ item, phase: 'new' });
+    // PDF 后端已自动入队识别(page-done 事件驱动进度),phase 直接置 queued,
+    // 不再送图片识别管线——否则第 0 页 PNG 会被 OCR 两次
+    imagesStore.items.push({
+      item,
+      phase: item.origin === 'pdf' ? 'queued' : 'new',
+    });
   }
   setActive(list[0].id);
   if (list.length > 1) {
     // 批量:切到识别记录看进度
     setView('records');
   }
-  const ids = list.map((i) => i.id);
   // PDF 条目:异步探测页数,翻页时按需渲染
   for (const it of list) {
     if (it.origin === 'pdf') {
@@ -56,14 +60,16 @@ export async function addItems(list: ImageItem[]) {
       });
     }
   }
-  await recognize(ids);
+  const ids = list.filter((i) => i.origin !== 'pdf').map((i) => i.id);
+  if (ids.length) await recognize(ids);
 }
 
-/** 批量结束后自动接续待识别的图片(批次进行中拖入的新图)。 */
+/** 批量结束后自动接续待识别的图片(批次进行中拖入的新图)。
+ *  PDF 条目由后端队列自动识别,不参与接续。 */
 export async function continuePending() {
   if (app.batchRunning) return;
   const pending = imagesStore.items
-    .filter((i) => i.phase === 'new')
+    .filter((i) => i.phase === 'new' && i.item.origin !== 'pdf')
     .map((i) => i.item.id);
   if (pending.length) await recognize(pending);
 }
@@ -120,13 +126,24 @@ async function recognize(ids: string[]) {
   }
 }
 
-/** 事件:单图完成(单张/批量/截图共用)。thumbToken 为识别搭车生成的缩略图令牌。 */
-export function applyOutcome(id: string, outcome: OcrOutcome, thumbToken?: string) {
+/** 事件:单图完成(单张/批量/截图共用)。thumbToken 为识别搭车生成的缩略图令牌。
+ *  pdfPage:PDF 页任务的页号——舰队模式晚到的非当前页结果(如页0)只推进
+ *  phase,不覆盖 outcome,右栏始终与画布当前页一致(翻页同步走 pdf_render_page)。 */
+export function applyOutcome(
+  id: string,
+  outcome: OcrOutcome,
+  thumbToken?: string,
+  pdfPage?: number,
+) {
   const st = imagesStore.items.find((i) => i.item.id === id);
   if (st) {
     st.phase = outcome.ok ? 'done' : 'error';
-    st.outcome = outcome;
-    if (thumbToken) st.item.thumbToken = thumbToken;
+    const stale =
+      pdfPage != null && st.pdfPages != null && pdfPage !== st.pdfPages.current;
+    if (!stale) {
+      st.outcome = outcome;
+      if (thumbToken) st.item.thumbToken = thumbToken;
+    }
   }
 }
 

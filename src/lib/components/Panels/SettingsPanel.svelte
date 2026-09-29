@@ -29,6 +29,18 @@
   let recording = $state(false);
   let pendingHotkey = $state('');
 
+  // 硬件检测信息(并行策略区展示;挂载时拉一次,设置变化时刷新策略)
+  let hw = $state<Awaited<ReturnType<typeof api.hwInfo>> | null>(null);
+  $effect(() => {
+    // 依赖 tier/workersOverride:策略按它们实时计算
+    void settings.tier;
+    void settings.workersOverride;
+    api
+      .hwInfo()
+      .then((h) => (hw = h))
+      .catch(() => (hw = null));
+  });
+
   function startRecord() {
     recording = true;
     pendingHotkey = '';
@@ -219,10 +231,41 @@
       </div>
     </AccordionSection>
 
-    <AccordionSection title="批量识别" open={false}>
+    <AccordionSection title="并行与批量" open={false}>
+      {#if hw}
+        <div class="field">
+          <span class="k">本机硬件</span>
+          <p class="note hw-info">
+            {hw.cpuBrand}<br />
+            {hw.physicalCores} 物理核 / {hw.logicalCores} 线程 · {hw.totalMemGb > 0 ? `${hw.totalMemGb} GB 内存` : '内存检测失败'}
+          </p>
+          <p class="note">
+            当前策略:{hw.plan.workers > 0
+              ? `${settings.workersOverride > 0 ? '手动' : '自动'} ${hw.plan.workers} 进程 × ${hw.plan.threadsEach} 线程 · 小批量并发 ${hw.plan.inprocConcurrency}${hw.plan.clampedByMem ? ' · 已被内存上限压低' : ''}`
+              : 'medium 档模型较重,不分治(进程内并发 ' + hw.plan.inprocConcurrency + ')'}
+          </p>
+        </div>
+      {/if}
       <div class="field">
         <span class="k">
-          并发数
+          worker 进程数
+          <em class="v">{settings.workersOverride === 0 ? '自动' : settings.workersOverride}</em>
+        </span>
+        <input
+          class="range"
+          type="range"
+          min="0"
+          max="8"
+          step="1"
+          value={settings.workersOverride}
+          oninput={(e) => (settings.workersOverride = +e.currentTarget.value)}
+          onchange={() => updateSettings({ workersOverride: settings.workersOverride })}
+        />
+        <p class="note">自动 = 启动时检测 CPU/内存按优化表取最优;手动值仍受内存安全上限约束,对下一批生效。8 张以上图片批量与 ≥8 页 PDF 按此数分进程并行</p>
+      </div>
+      <div class="field">
+        <span class="k">
+          小批量并发数
           <em class="v">{settings.batchConcurrency === 0 ? '自动' : settings.batchConcurrency}</em>
         </span>
         <input
@@ -235,7 +278,7 @@
           oninput={(e) => (settings.batchConcurrency = +e.currentTarget.value)}
           onchange={() => updateSettings({ batchConcurrency: settings.batchConcurrency })}
         />
-        <p class="note">自动 = 按档位定并发(tiny 4 / 其他 2)。8 张以上自动改走多进程分治(按档位 4-6 个 worker、按图片大小均衡分配,不受此项影响)。单张识别永远独占引擎,不受影响</p>
+        <p class="note">8 张以下批量的进程内并发(单张识别独占引擎,不受影响)。8 张以上自动改走上面的多进程分治</p>
       </div>
     </AccordionSection>
 
@@ -400,6 +443,10 @@
     font-size: 10.5px;
     color: var(--text-faint);
     line-height: 1.5;
+  }
+  .note.hw-info {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
   }
 
   .switch-row {

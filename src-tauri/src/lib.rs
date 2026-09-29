@@ -6,6 +6,7 @@ pub mod commands;
 pub mod dto;
 pub mod engine;
 pub mod history;
+pub mod hw;
 pub mod image_util;
 pub mod hotkey;
 pub mod ingest;
@@ -38,11 +39,15 @@ pub struct AppCtx {
     pub dirs: Dirs,
     pub settings: RwLock<Settings>,
     pub engine: engine::EngineManager,
+    /// 启动时一次性检测的硬件信息(并行策略优化表的输入)
+    pub hw: hw::HwInfo,
     pub media: media::MediaRegistry,
     pub items: RwLock<HashMap<String, ingest::ImageItem>>,
     /// 插入顺序（前端列表顺序）
     pub order: RwLock<Vec<String>>,
     pub batch: batch::BatchState,
+    /// PDF 后台识别队列(逐本处理,与图片批量互斥)
+    pub pdf: ingest::PdfOcrState,
     pub history: history::HistoryStore,
     pub shot: screenshot::SessionSlot,
     pub last_shot: Mutex<Option<dto::ItemOutcomeDto>>,
@@ -76,11 +81,30 @@ impl AppCtx {
     pub fn remove_item(&self, id: &str) {
         self.items.write().unwrap().remove(id);
         self.order.write().unwrap().retain(|i| i != id);
+        ingest::cleanup_pdf(self, id);
     }
 
     pub fn clear_items(&self) {
+        // 先记下 PDF 条目(清空后无从判断 origin),再清 + 逐个回收资源
+        let pdf_ids: Vec<String> = {
+            let items = self.items.read().unwrap();
+            self.order
+                .read()
+                .unwrap()
+                .iter()
+                .filter_map(|id| {
+                    items
+                        .get(id)
+                        .filter(|i| i.origin == "pdf")
+                        .map(|_| id.clone())
+                })
+                .collect()
+        };
         self.items.write().unwrap().clear();
         self.order.write().unwrap().clear();
+        for id in pdf_ids {
+            ingest::cleanup_pdf(self, &id);
+        }
     }
 }
 
@@ -146,6 +170,7 @@ fn bootstrap(app: AppHandle) {
     let settings = Settings::load(&data_dir.join("settings.json"));
     let models_dir = resolve_models_dir(&app, &settings);
     let threads = settings.threads;
+    let hw_info = hw::detect();
     let ctx = AppCtx {
         dirs: Dirs {
             settings_file: data_dir.join("settings.json"),
@@ -155,7 +180,9 @@ fn bootstrap(app: AppHandle) {
             shots,
         },
         engine: engine::EngineManager::new(threads, models_dir),
+        hw: hw_info,
         batch: batch::BatchState::new(settings.batch_concurrency),
+        pdf: ingest::PdfOcrState::default(),
         history: history::HistoryStore::load(data_dir.join("history.json")),
         media: media::MediaRegistry::default(),
         settings: RwLock::new(settings.clone()),
@@ -168,6 +195,24 @@ fn bootstrap(app: AppHandle) {
     let tier = settings::parse_tier(&settings.tier).unwrap_or(qppocr::Tier::Tiny);
     let preset = settings::parse_preset(&settings.preset).unwrap_or(qppocr::Preset::Balanced);
     app.manage(ctx);
+
+    // 硬件与并行策略一次性打日志(设置面板也有展示,这里给 dev 控制台/排障用)
+    {
+        let state = app.state::<AppCtx>();
+        let p = hw::plan(&state.hw, tier, settings.workers_override);
+        eprintln!(
+            "[hw] {} · P{}/L{} · {:.1}GB → {}: {} 进程 × {} 线程 · 小批量并发 {}{}",
+            state.hw.cpu_brand,
+            state.hw.physical_cores,
+            state.hw.logical_cores,
+            state.hw.total_mem as f64 / 1_073_741_824.0,
+            settings::tier_str(tier),
+            p.workers,
+            p.threads_each,
+            p.inproc_concurrency,
+            if p.clamped_by_mem { "(内存闸压低)" } else { "" },
+        );
+    }
 
     // 启动即建引擎：锁死进程级线程池尺寸
     app.state::<AppCtx>().engine.spawn_init(
@@ -193,6 +238,7 @@ fn bootstrap(app: AppHandle) {
         });
     }
     windowfx::apply_theme_effect(&app, &settings.theme);
+    ingest::spawn_pdf_queue(app.clone());
     history::spawn_flush_thread(app.clone());
     let _ = app.emit("app://ready", ());
 }
@@ -231,6 +277,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app_init,
             commands::engine_status,
+            commands::hw_info,
             commands::pick_images,
             commands::add_files,
             commands::read_clipboard_image,

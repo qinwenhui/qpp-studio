@@ -40,9 +40,13 @@
 
       const unlisteners: Promise<UnlistenFn>[] = [
         listen<EngineStatus>('engine://status', (e) => syncEngine(e.payload)),
-        listen<{ id: string; outcome: ItemOutcome['outcome']; thumbToken?: string }>(
-          'ocr://item-done',
-          (e) => applyOutcome(e.payload.id, e.payload.outcome, e.payload.thumbToken),
+        listen<{
+          id: string;
+          outcome: ItemOutcome['outcome'];
+          thumbToken?: string;
+          pdfPage?: number;
+        }>('ocr://item-done', (e) =>
+          applyOutcome(e.payload.id, e.payload.outcome, e.payload.thumbToken, e.payload.pdfPage),
         ),
         listen<{ id: string; phase: string }>('ocr://item-status', (e) =>
           applyStatus(e.payload.id, e.payload.phase),

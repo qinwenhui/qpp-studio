@@ -1,0 +1,210 @@
+//! 硬件检测与并行策略优化表。
+//!
+//! 启动时 `detect()` 一次,之后所有并行决策(图片批量 worker 数、PDF 舰队、
+//! 小批量进程内并发)统一走 `plan()`,替换掉原先按单台 18 核机调死的
+//! `clamp(cores/2, 2, cap)` 启发式。
+//!
+//! 优化表依据(详见仓库计划文档):
+//! - 市面主流 6-8 物理核(Steam 2026-08:6 核 ~29% + 8 核 ~27%),内存 16GB ~41% / 32GB ~37%
+//! - 实测原则(18 核大小核机):总线程 ≈ 逻辑核时最优,且「多小 worker 优于少大 worker」
+//!   (8×t2 = 3.46× > 4×t4 = 2.82×),OCR 属内存带宽受限型,worker 数超过物理核后收益归零
+//! - 内存是第二道闸:每个 worker 各持引擎实例 + 整页像素工作集,峰值 RSS 见
+//!   WORKER_BUDGET_*(QPP_BENCH_PDF 实测校准,预算 = 峰值 × ~1.3)
+
+use qppocr::Tier;
+
+const GIB: u64 = 1 << 30;
+
+/// 单 worker 进程峰值内存预算(tiny/small);medium 模型太重不分治,无预算。
+/// 数值 = QPP_BENCH_PDF 采样峰值 RSS × 1.3 余量,待各档实测后校准。
+const WORKER_BUDGET_TINY: u64 = GIB * 7 / 10;
+const WORKER_BUDGET_SMALL: u64 = GIB * 6 / 5;
+
+/// 给 OS + 应用本体(UI/WebView/主进程引擎)预留的内存。
+fn mem_reserve(total: u64) -> u64 {
+    (2 * GIB).max(total / 4)
+}
+
+fn worker_budget(tier: Tier) -> u64 {
+    match tier {
+        Tier::Tiny => WORKER_BUDGET_TINY,
+        Tier::Small => WORKER_BUDGET_SMALL,
+        Tier::Medium => 0, // 不分治
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HwInfo {
+    pub cpu_brand: String,
+    pub physical_cores: usize,
+    pub logical_cores: usize,
+    /// 总内存(字节);0 = 探测失败(跳过内存闸)
+    pub total_mem: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParallelPlan {
+    /// worker 进程数 K;0 = 不分治(medium / 内存不足 / 自动判定不划算)
+    pub workers: usize,
+    /// 每个 worker 的引擎线程数 t
+    pub threads_each: usize,
+    /// 小批量(< PROC_BATCH_MIN)进程内并发
+    pub inproc_concurrency: usize,
+    /// 内存闸允许的最大 worker 数(usize::MAX = 内存未知不设限)
+    pub mem_cap: usize,
+    /// 是否被内存闸压低(UI 提示用)
+    pub clamped_by_mem: bool,
+}
+
+pub fn detect() -> HwInfo {
+    let sys = sysinfo::System::new_all();
+    let logical = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8);
+    let physical = sys
+        .physical_core_count()
+        .filter(|&p| p > 0)
+        .unwrap_or((logical + 1) / 2);
+    let cpu_brand = sys
+        .cpus()
+        .first()
+        .map(|c| c.brand().trim().to_string())
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| "未知 CPU".into());
+    HwInfo {
+        cpu_brand,
+        physical_cores: physical.max(1),
+        logical_cores: logical.max(1),
+        total_mem: sys.total_memory(),
+    }
+}
+
+/// 优化表:硬件 × 档位 × (可选)手动覆盖 → 并行策略。
+///
+/// - K = min(物理核, 档位上限{tiny:8, small:4}, max(1, 逻辑核/2))
+///   ——「总线程≈逻辑核 + worker 数≤物理核」两条实测原则的交集
+/// - t = clamp(逻辑核/K, 1, 4)
+/// - 内存闸:mem_cap = (总内存 - 预留) / 单 worker 预算,K 压到 mem_cap
+/// - override > 0 时优先,但 medium 不解禁、内存闸仍生效(手动也拦不住 OOM)
+pub fn plan(hw: &HwInfo, tier: Tier, workers_override: usize) -> ParallelPlan {
+    let inproc = match tier {
+        Tier::Tiny => 4,
+        _ => 2,
+    }
+    .min(hw.logical_cores.max(1));
+
+    let budget = worker_budget(tier);
+    if budget == 0 {
+        return ParallelPlan {
+            workers: 0,
+            threads_each: 0,
+            inproc_concurrency: inproc,
+            mem_cap: 0,
+            clamped_by_mem: false,
+        };
+    }
+
+    let mem_cap = if hw.total_mem == 0 {
+        usize::MAX // 内存未知,不设限
+    } else {
+        (hw.total_mem.saturating_sub(mem_reserve(hw.total_mem)) / budget) as usize
+    };
+
+    let want = if workers_override > 0 {
+        workers_override
+    } else {
+        let cap = match tier {
+            Tier::Tiny => 8,
+            Tier::Small => 4,
+            Tier::Medium => 0,
+        };
+        hw.physical_cores
+            .min(cap)
+            .min(hw.logical_cores.div_ceil(2))
+            .max(1)
+    };
+
+    let k = want.min(mem_cap);
+    ParallelPlan {
+        workers: k,
+        threads_each: if k == 0 {
+            0
+        } else {
+            (hw.logical_cores / k).clamp(1, 4)
+        },
+        inproc_concurrency: inproc,
+        mem_cap,
+        clamped_by_mem: k < want,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qppocr::Tier::{Medium, Small, Tiny};
+
+    fn hw(p: usize, l: usize, gb: u64) -> HwInfo {
+        HwInfo {
+            cpu_brand: "test".into(),
+            physical_cores: p,
+            logical_cores: l,
+            total_mem: gb * GIB,
+        }
+    }
+
+    /// (输入, 期望 workers, threads_each, clamped_by_mem)
+    #[test]
+    fn table() {
+        // 开发机参照:18L/12P/32G/tiny → 实测最优 8×t2
+        let p = plan(&hw(12, 18, 32), Tiny, 0);
+        assert_eq!((p.workers, p.threads_each), (8, 2));
+        assert!(!p.clamped_by_mem);
+
+        // 主流 6 核台式:K=min(6,8,6)=6, t=clamp(12/6)=2
+        let p = plan(&hw(6, 12, 16), Tiny, 0);
+        assert_eq!((p.workers, p.threads_each), (6, 2));
+
+        // 入门 N100 4C/4T/8G:K=min(4,8,2)=2, t=2;内存闸 8-2/0.7=8 不约束
+        let p = plan(&hw(4, 4, 8), Tiny, 0);
+        assert_eq!((p.workers, p.threads_each), (2, 2));
+        assert!(!p.clamped_by_mem);
+
+        // 小内存机 6G/small:want=4 但闸 (6-2)/1.2=3 → 压到 3,t=clamp(8/3)=2
+        let p = plan(&hw(8, 8, 6), Small, 0);
+        assert_eq!((p.workers, p.threads_each), (3, 2));
+        assert!(p.clamped_by_mem);
+
+        // 内存不足以开任何一个 worker → 退化为不分治
+        let p = plan(&hw(8, 8, 2), Tiny, 0);
+        assert_eq!(p.workers, 0);
+        assert!(p.clamped_by_mem);
+
+        // medium 恒不分治,override 也不解禁
+        let p = plan(&hw(16, 32, 64), Medium, 8);
+        assert_eq!(p.workers, 0);
+        assert_eq!(p.inproc_concurrency, 2);
+
+        // 手动覆盖:优先于档位上限,仍受内存闸
+        let p = plan(&hw(12, 18, 32), Tiny, 6);
+        assert_eq!((p.workers, p.threads_each), (6, 3));
+        let p = plan(&hw(8, 8, 6), Small, 4);
+        assert_eq!(p.workers, 3);
+        assert!(p.clamped_by_mem);
+
+        // 高端 16C/32T/tiny:K=min(16,8,16)=8, t=clamp(32/8)=4(总线程=32≈逻辑核)
+        let p = plan(&hw(16, 32, 64), Tiny, 0);
+        assert_eq!((p.workers, p.threads_each), (8, 4));
+
+        // 内存探测失败(total=0):跳过闸
+        let mut h = hw(4, 4, 16);
+        h.total_mem = 0;
+        let p = plan(&h, Tiny, 0);
+        assert_eq!(p.workers, 2);
+        assert_eq!(p.mem_cap, usize::MAX);
+        assert!(!p.clamped_by_mem);
+
+        // 单核极端:L=1 → max(1, L/2)=1, t=clamp(1/1)=1
+        let p = plan(&hw(1, 1, 4), Tiny, 0);
+        assert_eq!((p.workers, p.threads_each), (1, 1));
+    }
+}

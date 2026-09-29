@@ -40,7 +40,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "models-bundle/models/": "models/"
+      "models-bundle/models/": "models/",
+      "models-bundle/pdfium.dll": "pdfium.dll"
     },
     "windows": {
       "nsis": {

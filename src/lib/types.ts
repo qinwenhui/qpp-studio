@@ -84,6 +84,8 @@ export interface Settings {
   hotkey: string;
   modelsDir?: string;
   batchConcurrency: number;
+  /** worker 进程数手动覆盖,0=自动(硬件优化表) */
+  workersOverride: number;
   /** 方向纠正(默认开) */
   orientation: boolean;
   /** 增强对比(默认关) */
@@ -92,6 +94,26 @@ export interface Settings {
   upscale: number;
   /** 截图时隐藏主窗口(工具栏截图按钮右键选择;默认不隐藏) */
   shotHide: boolean;
+}
+
+/** 硬件检测出的并行策略(按当前 tier + workersOverride 实时计算) */
+export interface ParallelPlan {
+  workers: number;
+  threadsEach: number;
+  inprocConcurrency: number;
+  /** 内存闸允许的最大 worker 数(u32::MAX = 内存未知不设限) */
+  memCap: number;
+  clampedByMem: boolean;
+}
+
+/** 硬件检测信息(hw_info 命令) */
+export interface HwInfo {
+  cpuBrand: string;
+  physicalCores: number;
+  logicalCores: number;
+  /** 总内存 GB;0 = 探测失败 */
+  totalMemGb: number;
+  plan: ParallelPlan;
 }
 
 /** PDF 页面信息 */

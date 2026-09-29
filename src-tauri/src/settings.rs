@@ -19,7 +19,11 @@ pub struct Settings {
     pub hotkey: String,
     pub models_dir: Option<String>,
     /// 批量并发上限,0 = 自动(按档位:tiny=4 / 其他=2)。8 张以上自动改走多进程分治,此项不生效
-    pub batch_concurrency: usize,    /// 方向纠正（0/180 分类自动翻正；引擎默认开，略增耗时）
+    pub batch_concurrency: usize,
+    /// worker 进程数手动覆盖,0 = 自动(硬件优化表:CPU 核数 + 内存闸)。
+    /// 仅 tiny/small 生效;手动值仍受内存安全上限约束。对下一批生效
+    pub workers_override: usize,
+    /// 方向纠正（0/180 分类自动翻正；引擎默认开，略增耗时）
     pub orientation: bool,
     /// 增强对比（低对比图片提升识别；引擎 Advanced.enhance_contrast）
     pub enhance_contrast: bool,
@@ -39,6 +43,7 @@ impl Default for Settings {
             hotkey: "ctrl+shift+o".into(),
             models_dir: None,
             batch_concurrency: 0,
+            workers_override: 0,
             orientation: true,
             enhance_contrast: false,
             upscale: 1,
