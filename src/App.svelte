@@ -24,6 +24,14 @@
   import { applySettings, loadSettings, syncEngine, settings } from '$lib/state/settings.svelte';
   import type { Settings, EngineStatus, ImageItem, ItemOutcome, ToastMsg } from '$lib/types';
 
+  /** 耗时格式化:<60s 显示「,耗时 12.3 秒」,否则「,耗时 2 分 5 秒」 */
+  function fmtElapsed(ms?: number): string {
+    if (ms == null) return '';
+    const s = ms / 1000;
+    if (s < 60) return `,耗时 ${s.toFixed(1)} 秒`;
+    return `,耗时 ${Math.floor(s / 60)} 分 ${Math.round(s % 60)} 秒`;
+  }
+
   onMount(() => {
     let cleanup: (() => void) | undefined;
     void (async () => {
@@ -61,13 +69,16 @@
         listen<import('$lib/types').PdfPageDone>('pdf://page-done', (e) => {
           applyPdfPageDone(e.payload);
         }),
-        listen<{ id: string; total: number; name: string }>('pdf://ocr-done', (e) => {
-          applyPdfOcrDone(e.payload.id);
-          const st = getActiveItem();
-          if (st && st.item.id === e.payload.id) {
-            toast('success', 'PDF 识别完成');
-          }
-        }),
+        listen<{ id: string; total: number; name: string; elapsedMs?: number }>(
+          'pdf://ocr-done',
+          (e) => {
+            applyPdfOcrDone(e.payload.id);
+            const st = getActiveItem();
+            if (st && st.item.id === e.payload.id) {
+              toast('success', 'PDF 识别完成' + fmtElapsed(e.payload.elapsedMs));
+            }
+          },
+        ),
         // 自测模式:走用户同款 add_files 命令(invoke 返回通道)
         listen<string[]>('app://selftest-open', (e) => {
           api

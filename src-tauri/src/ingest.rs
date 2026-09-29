@@ -134,6 +134,7 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
         let parent_id = id.clone();
         let pdf_name = file_name.clone();
         std::thread::spawn(move || {
+            let started = std::time::Instant::now();
             let st = app2.state::<crate::AppCtx>();
             let mut all_results = Vec::new();
             for page in 0..count {
@@ -173,11 +174,12 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
                     crate::batch::finalize(&app2, &parent_id, &outcome, None);
                 }
             }
-            // 完成
+            // 完成(携带端到端耗时:渲染+识别)
             let _ = app2.emit("pdf://ocr-done", serde_json::json!({
                 "id": parent_id,
                 "total": count,
                 "name": pdf_name,
+                "elapsedMs": started.elapsed().as_millis() as u64,
             }));
         });
 
