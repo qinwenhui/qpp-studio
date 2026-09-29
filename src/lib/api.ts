@@ -71,6 +71,10 @@ export const api = {
   openUrl: (url: string) => invoke<void>('open_url', { url }),
 
   pdfPageInfo: (id: string) => invoke<[number, number] | null>('pdf_page_info', { id }),
+  pdfPause: (id: string) => invoke<number | null>('pdf_pause', { id }),
+  pdfResume: (id: string) => invoke<void>('pdf_resume', { id }),
+  pdfRecognizePage: (id: string, page: number) =>
+    invoke<void>('pdf_recognize_page', { id, page }),
   pdfRenderPage: (id: string, page: number, dpi?: number) =>
     invoke<PdfPage>('pdf_render_page', { id, page, dpi }),
   pdfOcrRange: (id: string, startPage: number, endPage: number) =>

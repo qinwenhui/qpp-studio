@@ -241,11 +241,12 @@ fn emit_err_items(
 
 /// 单 worker 进程生命周期:spawn 自身 exe → 写一行请求 → 逐行回调 → 收尸。
 /// 失败路径(exe 定位/spawn/写 stdin)对整块合成错误回执;读循环中断(崩溃/
-/// 取消)只回执已收到的行,缺口由 run_fleet 收尾补齐——每项必有回执。
+/// 取消/暂停)只回执已收到的行,缺口由 run_fleet 收尾补齐(暂停除外,静默)。
 fn run_worker_proc(
     req_base: &serde_json::Value,
     chunk: &[FleetItem],
     cancel: &AtomicBool,
+    pause: &AtomicBool,
     mut on_event: impl FnMut(WorkerEvent),
 ) {
     let items: Vec<(String, Option<u32>)> = chunk
@@ -297,7 +298,7 @@ fn run_worker_proc(
     if let Some(stdout) = child.stdout.take() {
         let reader = std::io::BufReader::new(stdout);
         for line in reader.lines() {
-            if cancel.load(Ordering::SeqCst) {
+            if cancel.load(Ordering::SeqCst) || pause.load(Ordering::SeqCst) {
                 let _ = child.kill();
                 break;
             }
@@ -343,14 +344,16 @@ fn lpt_partition<T: Clone>(items: Vec<(T, u64)>, k: usize) -> Vec<Vec<T>> {
 
 /// 通用舰队:K 个自重生 worker 并行,**阻塞**至全部结束。
 /// `req_base`:请求公共字段(不含 tasks,线程数等已含);`pdf_spec`:PDF 模式
-/// 请求级 `pdf` 字段。结果实时回调 report(多线程共享,须 Sync);取消/崩溃
-/// 的缺口收尾时统一合成错误回调——调用方无需超时兜底。
+/// 请求级 `pdf` 字段。结果实时回调 report(多线程共享,须 Sync)。
+/// 中断语义:`cancel`(真取消,worker 崩溃/批量取消)对缺口统一合成错误回执;
+/// `pause`(暂停,仅 PDF 队列用)静默中断——缺失页留给 resume 重跑。
 pub(crate) fn run_fleet(
     mut req_base: serde_json::Value,
     pdf_spec: Option<serde_json::Value>,
     items: Vec<FleetItem>,
     k: usize,
     cancel: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
     report: &(impl Fn(WorkerEvent) + Sync),
 ) {
     if items.is_empty() {
@@ -374,13 +377,15 @@ pub(crate) fn run_fleet(
         .map(|t| (t.id.clone(), t.page))
         .collect();
 
+    // kill 条件 = 取消或暂停(读循环逐行检查,每行两次原子读,开销可忽略)
     std::thread::scope(|scope| {
         for chunk in chunks {
             let finished = &finished;
             let req = &req_base;
             let cancel = cancel.clone();
+            let pause = pause.clone();
             scope.spawn(move || {
-                run_worker_proc(req, &chunk, &cancel, |ev| {
+                run_worker_proc(req, &chunk, &cancel, &pause, |ev| {
                     let key = (ev.id.clone(), ev.page);
                     report(ev);
                     finished.lock().unwrap().insert(key);
@@ -389,7 +394,10 @@ pub(crate) fn run_fleet(
         }
     });
 
-    // 未完成的(取消/进程异常)统一回执,UI 不悬死
+    // 暂停:静默返回(缺失页由 resume 重跑);取消/崩溃:统一错误回执,UI 不悬死
+    if pause.load(Ordering::SeqCst) {
+        return;
+    }
     let fin = finished.into_inner().unwrap();
     for key in all_keys {
         if !fin.contains(&key) {
@@ -439,6 +447,8 @@ pub fn spawn_proc_batch(
     });
 
     let cancel = state.batch.cancel.clone();
+    // 图片批量没有「暂停」语义,传一个永不置位的占位旗标
+    let no_pause = Arc::new(AtomicBool::new(false));
     std::thread::spawn(move || {
         let sink = |ev: WorkerEvent| {
             // worker 已把缩略图写进共享缓存目录,主进程注册令牌即可
@@ -455,7 +465,7 @@ pub fn spawn_proc_batch(
             };
             finalize(&app, &ev.id, &ev.outcome, thumb, None);
         };
-        run_fleet(req_base, None, items, k, cancel, &sink);
+        run_fleet(req_base, None, items, k, cancel, no_pause, &sink);
         let state = app.state::<crate::AppCtx>();
         state.batch.running.store(false, Ordering::SeqCst);
         let _ = app.emit("batch://done", ());

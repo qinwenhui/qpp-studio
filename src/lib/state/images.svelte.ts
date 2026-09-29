@@ -47,14 +47,27 @@ export async function addItems(list: ImageItem[]) {
     // 批量:切到识别记录看进度
     setView('records');
   }
-  // PDF 条目:异步探测页数,翻页时按需渲染
+  // PDF 条目:异步探测页数与模式(第二元素 0=自动全册,1=按需)
   for (const it of list) {
     if (it.origin === 'pdf') {
       void api.pdfPageInfo(it.id).then((info) => {
         if (info) {
           const st = imagesStore.items.find((x) => x.item.id === it.id);
           if (st) {
-            st.pdfPages = { count: info[0], current: info[1], ocrDone: 0 };
+            const onDemand = info[1] === 1;
+            st.pdfPages = {
+              count: info[0],
+              current: 0,
+              ocrDone: 0,
+              onDemand,
+              ocrState: onDemand ? 'idle' : 'running',
+            };
+            if (onDemand) {
+              toast('info', `大文档(${info[0]} 页):按需识别,翻到哪页识别哪页;也可点「识别全部」`);
+              // 初始停在第 0 页,没翻页也要有结果:自动识别当前页
+              st.phase = 'running';
+              void api.pdfRecognizePage(it.id, 0).catch(() => {});
+            }
           }
         }
       });
@@ -221,7 +234,7 @@ export function mediaSrc(item: ImageItem): string {
   return mediaUrl(item.mediaToken);
 }
 
-/** PDF 后台识别每页结果:记录进度 + 更新当前显示页的 outcome。 */
+/** PDF 后台识别每页结果:推进状态机 + 更新当前显示页的 outcome。 */
 export function applyPdfPageDone(p: {
   id: string;
   page: number;
@@ -232,7 +245,14 @@ export function applyPdfPageDone(p: {
   const st = imagesStore.items.find((i) => i.item.id === p.id);
   if (!st) return;
   // 进度始终记录(导航条显示 X/N),条目切走再切回来也不丢
-  if (st.pdfPages) st.pdfPages.ocrDone = p.done;
+  if (st.pdfPages) {
+    st.pdfPages.ocrDone = p.done;
+    // 只有整册运行中的页事件才推进状态机;按需单页(idle/paused 态)不改状态,
+    // 避免误显示成整册进度条
+    if (st.pdfPages.ocrState === 'running' && p.done >= p.total) {
+      st.pdfPages.ocrState = 'done';
+    }
+  }
   // 只有当前显示页才更新条目 outcome
   if (st.pdfPages && st.pdfPages.current === p.page) {
     st.outcome = p.outcome;
@@ -240,8 +260,10 @@ export function applyPdfPageDone(p: {
   }
 }
 
-/** PDF 后台识别全部完成:进度落定(即使个别页渲染失败被跳过也归位)。 */
-export function applyPdfOcrDone(id: string) {
-  const st = imagesStore.items.find((i) => i.item.id === id);
-  if (st?.pdfPages) st.pdfPages.ocrDone = st.pdfPages.count;
+/** PDF 一轮识别结束:completed<total = 被暂停(缺失页由「继续」补跑)。 */
+export function applyPdfOcrDone(p: { id: string; completed: number; total: number }) {
+  const st = imagesStore.items.find((i) => i.item.id === p.id);
+  if (!st?.pdfPages) return;
+  st.pdfPages.ocrDone = p.completed;
+  st.pdfPages.ocrState = p.completed >= p.total ? 'done' : 'paused';
 }

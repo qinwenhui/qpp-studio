@@ -128,6 +128,8 @@ export interface PdfPage {
   w: number;
   h: number;
   page: number;
+  /** 该页是否已有识别结果(按需模式据此触发单页识别) */
+  recognized: boolean;
 }
 
 export interface InitInfo {
@@ -171,8 +173,16 @@ export interface ItemState {
   item: ImageItem;
   phase: Phase;
   outcome?: OcrOutcome;
-  /** PDF 专属:总页数、当前显示页、后台识别进度(已识别页数,非 PDF 为 null) */
-  pdfPages?: { count: number; current: number; ocrDone?: number };
+  /** PDF 专属:总页数、当前显示页、识别进度/模式(非 PDF 为 null) */
+  pdfPages?: {
+    count: number;
+    current: number;
+    ocrDone: number;
+    /** 按需模式:翻到哪页识别哪页(大文档默认) */
+    onDemand?: boolean;
+    /** 识别状态机:idle(按需未跑)| running | paused | done */
+    ocrState?: 'idle' | 'running' | 'paused' | 'done';
+  };
   canExtract?: boolean;
 }
 

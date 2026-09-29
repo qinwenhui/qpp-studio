@@ -360,8 +360,15 @@ fn bench_pdf(app: AppHandle, pdf_path: &str) {
     let mut peak_sum_final = 0u64;
     for round in 1..=2 {
         let id = format!("benchpdf-r{round}");
-        crate::ingest::PDF_STORE.lock().unwrap().insert(id.clone(), bytes.clone());
-        crate::ingest::PDF_PAGES.lock().unwrap().insert(id.clone(), (pages, 0));
+        crate::ingest::PDF_STORE.lock().unwrap().insert(id.clone(), path.clone());
+        crate::ingest::PDF_PAGES.lock().unwrap().insert(
+            id.clone(),
+            crate::ingest::PdfMeta {
+                count: pages,
+                on_demand: false,
+                weights: weights.clone(),
+            },
+        );
         crate::ingest::PDF_RESULTS
             .lock()
             .unwrap()
@@ -370,7 +377,8 @@ fn bench_pdf(app: AppHandle, pdf_path: &str) {
             id: id.clone(),
             name: "bench".into(),
             src_path: path.clone(),
-            pages,
+            pages: (0..pages).collect(),
+            total: pages,
             weights: weights.clone(),
         };
         let stop = Arc::new(AtomicBool::new(false));
@@ -587,7 +595,7 @@ fn run(app: AppHandle) {
                     .lock()
                     .unwrap()
                     .get(&id)
-                    .map(|(c, _)| *c)
+                    .map(|m| m.count)
                     .unwrap_or(0);
                 let t0 = Instant::now();
                 let mut got = 0usize;

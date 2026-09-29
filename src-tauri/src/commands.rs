@@ -539,10 +539,64 @@ pub fn open_url(app: AppHandle, url: String) -> Result<(), String> {
 
 // ---- PDF ----
 
-/// 获取 PDF 条目的页数与当前页。
+/// 获取 PDF 条目的 (总页数, 模式标记)。第二元素:0=自动全册,1=按需模式。
 #[tauri::command]
 pub fn pdf_page_info(id: String) -> Option<(u32, u32)> {
-    crate::ingest::PDF_PAGES.lock().unwrap().get(&id).copied()
+    let meta = crate::ingest::PDF_PAGES.lock().unwrap().get(&id).cloned()?;
+    Some((meta.count, if meta.on_demand { 1 } else { 0 }))
+}
+
+/// 暂停该 PDF 的识别(静默中断,不产生错误结果)。返回当前已完成页数。
+#[tauri::command]
+pub fn pdf_pause(app: AppHandle, id: String) -> Option<u32> {
+    crate::ingest::pause_pdf(&app, &id)
+}
+
+/// 继续识别缺失页(按需模式的「识别全部」也是它):入队只含未完成页的任务。
+#[tauri::command]
+pub fn pdf_resume(app: AppHandle, state: State<AppCtx>, id: String) -> Result<(), String> {
+    let (total, pages) =
+        crate::ingest::remaining_pages(&id).ok_or("PDF 条目不存在")?;
+    if pages.is_empty() {
+        return Ok(());
+    }
+    let meta = crate::ingest::PDF_PAGES
+        .lock()
+        .unwrap()
+        .get(&id)
+        .cloned()
+        .ok_or("PDF 条目不存在")?;
+    let src = crate::ingest::PDF_STORE
+        .lock()
+        .unwrap()
+        .get(&id)
+        .cloned()
+        .ok_or("PDF 条目不存在")?;
+    let name = state
+        .items
+        .read()
+        .unwrap()
+        .get(&id)
+        .map(|i| i.name.clone())
+        .unwrap_or_default();
+    crate::ingest::enqueue_pdf_ocr(
+        &app,
+        crate::ingest::PdfOcrJob {
+            id,
+            name,
+            src_path: src,
+            pages,
+            total,
+            weights: meta.weights,
+        },
+    );
+    Ok(())
+}
+
+/// 按需识别单页(翻到未识别页时前端触发;已识别/在途则静默跳过)。
+#[tauri::command]
+pub fn pdf_recognize_page(app: AppHandle, id: String, page: u32) {
+    crate::ingest::recognize_single_page(&app, &id, page);
 }
 
 /// 渲染一页到 inbox 缓存文件(JPEG q90——编码比 PNG 快数倍,显示与重识别都够用)。
@@ -552,12 +606,13 @@ fn render_view_page_to_file(
     page: u32,
 ) -> Result<(PathBuf, u32, u32), String> {
     let state = app.state::<AppCtx>();
-    let bytes = crate::ingest::PDF_STORE
+    let src = crate::ingest::PDF_STORE
         .lock()
         .unwrap()
         .get(id)
         .cloned()
         .ok_or("PDF 条目不存在")?;
+    let bytes = std::fs::read(&src).map_err(|e| format!("读取 PDF 失败: {e}"))?;
     let (w, h, rgb) = crate::pdf::render_page(&bytes, page, crate::pdf::DPI_VIEW)?;
     let path = state.dirs.inbox.join(format!("{id}_p{page}.jpg"));
     let img = image::RgbImage::from_raw(w, h, rgb).ok_or("渲染数据无效")?;
@@ -582,7 +637,7 @@ fn prefetch_view_page(app: &AppHandle, id: &str, page: u32) {
         .lock()
         .unwrap()
         .get(id)
-        .map(|(c, _)| *c)
+        .map(|m| m.count)
         .unwrap_or(0);
     if page >= count {
         return;
@@ -649,6 +704,7 @@ pub async fn pdf_render_page(
             let results = crate::ingest::PDF_RESULTS.lock().unwrap();
             results.get(&id2).and_then(|m| m.get(&page)).cloned()
         };
+        let recognized = page_outcome.is_some();
         if let Some(outcome) = page_outcome {
             let _ = app2.emit("ocr://item-done", crate::dto::ItemDoneDto {
                 id: id2.clone(),
@@ -659,7 +715,7 @@ pub async fn pdf_render_page(
         }
         // 预取下一页:翻页方向上的下一击就是缓存命中
         prefetch_view_page(&app2, &id2, page + 1);
-        Ok(crate::dto::PdfPageDto { media_token: token2, w, h, page })
+        Ok(crate::dto::PdfPageDto { media_token: token2, w, h, page, recognized })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -674,12 +730,13 @@ pub async fn pdf_ocr_range(
     start_page: u32,
     end_page: u32,
 ) -> Result<(), String> {
-    let bytes = crate::ingest::PDF_STORE
+    let src = crate::ingest::PDF_STORE
         .lock()
         .unwrap()
         .get(&id)
         .cloned()
         .ok_or("不是 PDF 条目或已释放")?;
+    let bytes = std::fs::read(&src).map_err(|e| format!("读取 PDF 失败: {e}"))?;
     let total = crate::pdf::page_count(&bytes)?;
     let start = start_page.min(total.saturating_sub(1));
     let end = end_page.min(total.saturating_sub(1));
@@ -870,12 +927,13 @@ pub async fn pdf_extract_all(
     app: AppHandle,
     id: String,
 ) -> Result<Vec<crate::dto::PdfExtractedPageDto>, String> {
-    let bytes = crate::ingest::PDF_STORE
+    let src = crate::ingest::PDF_STORE
         .lock()
         .unwrap()
         .get(&id)
         .cloned()
         .ok_or("不是 PDF 条目或已释放")?;
+    let bytes = std::fs::read(&src).map_err(|e| format!("读取 PDF 失败: {e}"))?;
 
     let total = crate::pdf::page_count(&bytes)?;
     let has_text = crate::pdf::has_text_layer(&bytes);

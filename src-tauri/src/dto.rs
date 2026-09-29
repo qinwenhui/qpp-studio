@@ -310,6 +310,8 @@ pub struct PdfPageDto {
     pub w: u32,
     pub h: u32,
     pub page: u32,
+    /// 该页是否已有识别结果(按需模式前端据此触发单页识别)
+    pub recognized: bool,
 }
 
 /// PDF 文本直提结果(每页)。

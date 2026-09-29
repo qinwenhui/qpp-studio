@@ -73,16 +73,20 @@
         listen<import('$lib/types').PdfPageDone>('pdf://page-done', (e) => {
           applyPdfPageDone(e.payload);
         }),
-        listen<{ id: string; total: number; name: string; elapsedMs?: number }>(
-          'pdf://ocr-done',
-          (e) => {
-            applyPdfOcrDone(e.payload.id);
-            const st = getActiveItem();
-            if (st && st.item.id === e.payload.id) {
-              toast('success', 'PDF 识别完成' + fmtElapsed(e.payload.elapsedMs));
-            }
-          },
-        ),
+        listen<{
+          id: string;
+          total: number;
+          completed: number;
+          name: string;
+          elapsedMs?: number;
+        }>('pdf://ocr-done', (e) => {
+          applyPdfOcrDone(e.payload);
+          // completed<total 是被暂停:不打扰(用户刚点的暂停)
+          const st = getActiveItem();
+          if (st && st.item.id === e.payload.id && e.payload.completed >= e.payload.total) {
+            toast('success', 'PDF 识别完成' + fmtElapsed(e.payload.elapsedMs));
+          }
+        }),
         // 自测模式:走用户同款 add_files 命令(invoke 返回通道)
         listen<string[]>('app://selftest-open', (e) => {
           api

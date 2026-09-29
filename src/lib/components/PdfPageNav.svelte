@@ -14,7 +14,10 @@
   const current = $derived(pdf?.current ?? 0);
   const count = $derived(pdf?.count ?? 0);
   const ocrDone = $derived(pdf?.ocrDone ?? 0);
-  const ocrRunning = $derived(ocrDone < count && count > 0);
+  const ocrState = $derived(pdf?.ocrState ?? 'idle');
+  const onDemand = $derived(!!pdf?.onDemand);
+  /** 当前页单页识别中(按需模式;整册跑的时候用进度条) */
+  const pageBusy = $derived(active?.phase === 'running' || active?.phase === 'queued');
 
   let jumpTo = $state('');
 
@@ -28,6 +31,35 @@
       active.item.mediaToken = result.mediaToken;
       active.item.w = result.w;
       active.item.h = result.h;
+      // 按需模式:翻到未识别页 → 自动单页识别(整册跑着就不用,舰队会覆盖)
+      if (!result.recognized && pdf.onDemand && ocrState !== 'running') {
+        active.phase = 'running';
+        void api.pdfRecognizePage(active.item.id, clamped).catch((e) => toast('error', String(e)));
+      }
+    } catch (e) {
+      toast('error', String(e));
+    }
+  }
+
+  /** 暂停:静默中断,返回当前完成数,缺失页留给「继续」 */
+  async function pauseOcr() {
+    if (!active || !pdf) return;
+    try {
+      const completed = await api.pdfPause(active.item.id);
+      pdf.ocrState = 'paused';
+      if (completed != null) pdf.ocrDone = completed;
+    } catch (e) {
+      toast('error', String(e));
+    }
+  }
+
+  /** 继续 / 按需模式的「识别全部」:只跑缺失页 */
+  async function resumeOcr() {
+    if (!active || !pdf) return;
+    try {
+      await api.pdfResume(active.item.id);
+      pdf.ocrState = 'running';
+      pdf.onDemand = false;
     } catch (e) {
       toast('error', String(e));
     }
@@ -100,8 +132,24 @@
       <Icon name="chevronRight" size={14} />
     </button>
 
-    <!-- 识别进度:后台自动识别,这里只显示进度 -->
-    {#if ocrRunning}
+    <!-- 识别控制 + 进度(状态机:按需 idle / 运行 running / 已暂停 paused / 完成 done) -->
+    {#if onDemand && (ocrState === 'idle' || ocrState === 'done')}
+      {#if pageBusy}
+        <span class="ocr-progress" title="按需模式:翻到哪页识别哪页">
+          <span class="spin"><Icon name="spinner" size={11} spinning /></span>
+          <span>本页识别中</span>
+        </span>
+      {:else}
+        <span class="ocr-badge" title="大文档默认按需:翻到哪页识别哪页">按需</span>
+      {/if}
+      <button
+        class="ctrl-btn"
+        onclick={() => resumeOcr()}
+        title="识别全部 {count} 页(可随时暂停)">
+        <Icon name="layers" size={13} />
+        识别全部
+      </button>
+    {:else if ocrState === 'running' && count > 0}
       <span class="ocr-progress">
         <span class="spin"><Icon name="spinner" size={11} spinning /></span>
         <span class="done">{ocrDone}/{count}</span>
@@ -109,7 +157,25 @@
           <span class="mini-fill" style="width: {count ? (ocrDone / count) * 100 : 0}%"></span>
         </span>
       </span>
-    {:else if ocrDone >= count && count > 0}
+      <button
+        class="ctrl-btn"
+        onclick={() => pauseOcr()}
+        title="暂停识别(已完成的保留,随时可继续)">
+        <Icon name="pause" size={12} />
+        暂停
+      </button>
+    {:else if ocrState === 'paused'}
+      <span class="ocr-paused">
+        已暂停 {ocrDone}/{count}
+      </span>
+      <button
+        class="ctrl-btn accent"
+        onclick={() => resumeOcr()}
+        title="继续识别剩余 {count - ocrDone} 页">
+        <Icon name="play" size={12} />
+        继续
+      </button>
+    {:else if ocrState === 'done' && count > 0}
       <span class="ocr-done">
         <Icon name="check" size={11} />
         已完成
@@ -226,6 +292,51 @@
     gap: 5px;
     font-size: 11.5px;
     color: var(--success);
+  }
+
+  .ocr-badge {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--text-faint) 14%, transparent);
+    white-space: nowrap;
+  }
+  .ocr-paused {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11.5px;
+    font-family: var(--font-mono);
+    color: var(--warning, #d29a4a);
+    white-space: nowrap;
+  }
+  .ctrl-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    transition: all var(--speed-fast) var(--ease-out);
+    white-space: nowrap;
+  }
+  .ctrl-btn:hover {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .ctrl-btn.accent {
+    color: var(--accent-contrast);
+    background: var(--accent);
+  }
+  .ctrl-btn.accent:hover {
+    filter: brightness(1.1);
   }
 
   .extract-btn {
