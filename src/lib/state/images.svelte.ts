@@ -247,9 +247,9 @@ export function applyPdfPageDone(p: {
   // 进度始终记录(导航条显示 X/N),条目切走再切回来也不丢
   if (st.pdfPages) {
     st.pdfPages.ocrDone = p.done;
-    // 只有整册运行中的页事件才推进状态机;按需单页(idle/paused 态)不改状态,
-    // 避免误显示成整册进度条
-    if (st.pdfPages.ocrState === 'running' && p.done >= p.total) {
+    // 全部页有结果即完成——无论结果来自整册跑还是暂停后逐页补认;
+    // 其余情况保持当前状态(idle 单页认不出进度条,paused 仍显示已暂停 X/N)
+    if (p.done >= p.total) {
       st.pdfPages.ocrState = 'done';
     }
   }

@@ -31,10 +31,18 @@
       active.item.mediaToken = result.mediaToken;
       active.item.w = result.w;
       active.item.h = result.h;
-      // 按需模式:翻到未识别页 → 自动单页识别(整册跑着就不用,舰队会覆盖)
-      if (!result.recognized && pdf.onDemand && ocrState !== 'running') {
-        active.phase = 'running';
-        void api.pdfRecognizePage(active.item.id, clamped).catch((e) => toast('error', String(e)));
+      if (!result.recognized) {
+        // 未识别页:立即清掉上一页的陈旧结果(否则画布是新页、框线/右栏
+        // 还是旧页的,视觉上"结果对不上"),右栏进入识别中
+        active.outcome = undefined;
+        active.phase = 'queued';
+        // 整册没在跑(按需/已暂停) → 单页识别;舰队跑着则等它覆盖
+        if (ocrState !== 'running') {
+          active.phase = 'running';
+          void api
+            .pdfRecognizePage(active.item.id, clamped)
+            .catch((e) => toast('error', String(e)));
+        }
       }
     } catch (e) {
       toast('error', String(e));
@@ -60,7 +68,8 @@
     try {
       const hadWork = await api.pdfResume(active.item.id);
       pdf.ocrState = hadWork ? 'running' : 'done';
-      pdf.onDemand = false;
+      // 注意不碰 onDemand:暂停后翻到未识别页仍要单页识别,
+      // onDemand 只控制 UI 展示(徽标/按钮),不控制识别触发
     } catch (e) {
       toast('error', String(e));
     }
