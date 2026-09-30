@@ -41,8 +41,10 @@ pub const PDF_AUTO_OCR_MAX: u32 = 50;
 #[derive(Clone)]
 pub struct PdfMeta {
     pub count: u32,
-    /// 按需模式:翻到哪页识别哪页,不自动全册
+    /// 按需模式:翻到哪页识别哪页,不自动全册(文本层 PDF 恒 false——直提秒完)
     pub on_demand: bool,
+    /// 文本层直提模式(resume/单页识别也要走直提而非 OCR)
+    pub extract: bool,
     /// 每页像素权重(ingest 时探测,resume 任务的 LPT 分块用)
     pub weights: Vec<u64>,
 }
@@ -177,6 +179,7 @@ pub fn spawn_ondemand_worker(app: AppHandle) {
         let mut cur_id = String::new();
         let mut cur_doc: Option<pdfium_render::prelude::PdfDocument<'static>> = None;
         let mut cur_count = 0u32;
+        let mut cur_extract = false;
 
         loop {
             // 等任务(LIFO:最后翻到的页最先处理)
@@ -209,6 +212,7 @@ pub fn spawn_ondemand_worker(app: AppHandle) {
                     continue;
                 };
                 cur_count = meta.count;
+                cur_extract = meta.extract;
                 match crate::pdf::load_doc_from_file(&src) {
                     Ok(d) => {
                         cur_doc = Some(d);
@@ -228,35 +232,42 @@ pub fn spawn_ondemand_worker(app: AppHandle) {
                 continue;
             }
             let doc = cur_doc.as_ref().expect("刚校验过");
-            // 引擎有界等待(启动头几秒)
-            let mut engine = state.engine.current();
-            for _ in 0..150 {
-                if engine.is_some() {
-                    break;
+            let outcome = if cur_extract {
+                // 文本层 PDF:单页也走直提(毫秒级,无需引擎)
+                crate::pdf::extract_doc_text_lines(doc, page, crate::pdf::DPI_OCR)
+                    .map(extract_lines_to_outcome)
+                    .unwrap_or_else(crate::dto::outcome_err)
+            } else {
+                // 引擎有界等待(启动头几秒)
+                let mut engine = state.engine.current();
+                for _ in 0..150 {
+                    if engine.is_some() {
+                        break;
+                    }
+                    if !PDF_PAGES.lock().unwrap().contains_key(&id) {
+                        engine = None;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    engine = state.engine.current();
                 }
-                if !PDF_PAGES.lock().unwrap().contains_key(&id) {
-                    engine = None;
-                    break;
+                let Some(engine) = engine else { continue };
+                match crate::pdf::render_doc_page(doc, page, crate::pdf::DPI_OCR)
+                    .and_then(|(w, h, rgb)| {
+                        qppocr::rgb_from_bytes(w, h, rgb).map_err(|e| e.to_string())
+                    }) {
+                    Ok(img) => {
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            engine.run(&img)
+                        }));
+                        crate::dto::outcome_from(match r {
+                            Ok(Ok(v)) => Ok(v),
+                            Ok(Err(e)) => Err(e),
+                            Err(_) => Err(qppocr::Error::Image("引擎内部错误".into())),
+                        })
+                    }
+                    Err(e) => crate::dto::outcome_err(e),
                 }
-                std::thread::sleep(std::time::Duration::from_millis(400));
-                engine = state.engine.current();
-            }
-            let Some(engine) = engine else { continue };
-            let outcome = match crate::pdf::render_doc_page(doc, page, crate::pdf::DPI_OCR)
-                .and_then(|(w, h, rgb)| {
-                    qppocr::rgb_from_bytes(w, h, rgb).map_err(|e| e.to_string())
-                }) {
-                Ok(img) => {
-                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        engine.run(&img)
-                    }));
-                    crate::dto::outcome_from(match r {
-                        Ok(Ok(v)) => Ok(v),
-                        Ok(Err(e)) => Err(e),
-                        Err(_) => Err(qppocr::Error::Image("引擎内部错误".into())),
-                    })
-                }
-                Err(e) => crate::dto::outcome_err(e),
             };
             let d = insert_result(&id, page, outcome.clone());
             emit_page(&app, &id, page, &outcome, d, cur_count);
@@ -456,6 +467,48 @@ pub(crate) fn run_pdf_fleet(app: &AppHandle, job: &PdfOcrJob, plan: &crate::hw::
     crate::batch::run_fleet(req_base, Some(pdf_spec), items, k, cancel.clone(), pause, &sink);
 }
 
+/// 文本层行集 → OCR 同构结果(行框全宽近似,置信度 1.0)。
+/// 串行直提与按需单页共用。
+fn extract_lines_to_outcome(
+    lines: Vec<(String, f32, [[f32; 2]; 4])>,
+) -> OcrOutcomeDto {
+    let line_dtos = lines
+        .iter()
+        .map(|(text, conf, pts)| crate::dto::TextLineDto {
+            text: text.clone(),
+            confidence: *conf,
+            rotation: 0,
+            pts: *pts,
+            chars: Vec::new(),
+            retried: false,
+        })
+        .collect::<Vec<_>>();
+    // 结果框基于页面渲染坐标;从行框反推页面包围盒作 work 尺寸
+    let (mut w, mut h) = (0f32, 0f32);
+    for l in &line_dtos {
+        for p in &l.pts {
+            w = w.max(p[0]);
+            h = h.max(p[1]);
+        }
+    }
+    OcrOutcomeDto {
+        ok: true,
+        error: None,
+        result: Some(crate::dto::OcrResultDto {
+            lines: line_dtos,
+            work_w: w as i32,
+            work_h: h as i32,
+            num_boxes: lines.len() as u32,
+            num_merged: 0,
+            num_decluttered: 0,
+            num_det_retried: 0,
+            num_flipped: 0,
+            num_unread: 0,
+            timings: Default::default(),
+        }),
+    }
+}
+
 /// 文本层直提(数字原生 PDF):主进程逐页提取文本层 → 组装成 OCR 同构结果
 /// (行框为全宽近似,置信度 1.0)。毫秒级/页;失败页产出错误回执,不悬死。
 fn serial_pdf_extract(app: &AppHandle, job: &PdfOcrJob) {
@@ -480,46 +533,9 @@ fn serial_pdf_extract(app: &AppHandle, job: &PdfOcrJob) {
         if !PDF_PAGES.lock().unwrap().contains_key(&job.id) {
             break; // 条目已删
         }
-        let outcome = match crate::pdf::extract_doc_text_lines(&doc, page, crate::pdf::DPI_OCR) {
-            Ok(lines) => {
-                let line_dtos = lines
-                    .iter()
-                    .map(|(text, conf, pts)| crate::dto::TextLineDto {
-                        text: text.clone(),
-                        confidence: *conf,
-                        rotation: 0,
-                        pts: *pts,
-                        chars: Vec::new(),
-                        retried: false,
-                    })
-                    .collect::<Vec<_>>();
-                // 结果框基于页面渲染坐标;从行框反推页面包围盒作 work 尺寸
-                let (mut w, mut h) = (0f32, 0f32);
-                for l in &line_dtos {
-                    for p in &l.pts {
-                        w = w.max(p[0]);
-                        h = h.max(p[1]);
-                    }
-                }
-                OcrOutcomeDto {
-                    ok: true,
-                    error: None,
-                    result: Some(crate::dto::OcrResultDto {
-                        lines: line_dtos,
-                        work_w: w as i32,
-                        work_h: h as i32,
-                        num_boxes: lines.len() as u32,
-                        num_merged: 0,
-                        num_decluttered: 0,
-                        num_det_retried: 0,
-                        num_flipped: 0,
-                        num_unread: 0,
-                        timings: Default::default(),
-                    }),
-                }
-            }
-            Err(e) => crate::dto::outcome_err(e),
-        };
+        let outcome = crate::pdf::extract_doc_text_lines(&doc, page, crate::pdf::DPI_OCR)
+            .map(extract_lines_to_outcome)
+            .unwrap_or_else(crate::dto::outcome_err);
         let d = insert_result(&job.id, page, outcome.clone());
         emit_page(app, &job.id, page, &outcome, d, job.total);
     }
@@ -697,14 +713,16 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
             .map(|&pt| crate::pdf::page_weight(pt, crate::pdf::DPI_OCR))
             .collect();
 
-        // 存元信息(源只存路径——几百 MB 的 PDF 字节常驻内存不可接受)
-        let on_demand = count > PDF_AUTO_OCR_MAX;
+        // 存元信息(源只存路径——几百 MB 的 PDF 字节常驻内存不可接受)。
+        // 文本层 PDF 恒为自动模式:直提毫秒级完成,按需无意义
+        let on_demand = !can_extract && count > PDF_AUTO_OCR_MAX;
         PDF_STORE.lock().unwrap().insert(id.clone(), path.to_path_buf());
         PDF_PAGES.lock().unwrap().insert(
             id.clone(),
             PdfMeta {
                 count,
                 on_demand,
+                extract: can_extract,
                 weights: weights.clone(),
             },
         );

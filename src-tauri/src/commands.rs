@@ -584,6 +584,8 @@ pub fn pdf_resume(app: AppHandle, state: State<AppCtx>, id: String) -> Result<bo
         .get(&id)
         .map(|i| i.name.clone())
         .unwrap_or_default();
+    // 直提 PDF 的继续也走直提(毫秒级),不能落回 OCR
+    let extract = meta.extract;
     crate::ingest::enqueue_pdf_ocr(
         &app,
         crate::ingest::PdfOcrJob {
@@ -593,7 +595,7 @@ pub fn pdf_resume(app: AppHandle, state: State<AppCtx>, id: String) -> Result<bo
             pages,
             total,
             weights: meta.weights,
-            extract: false,
+            extract,
         },
     );
     Ok(true)

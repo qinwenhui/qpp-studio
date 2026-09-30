@@ -366,6 +366,7 @@ fn bench_pdf(app: AppHandle, pdf_path: &str) {
             crate::ingest::PdfMeta {
                 count: pages,
                 on_demand: false,
+                extract: false,
                 weights: weights.clone(),
             },
         );
