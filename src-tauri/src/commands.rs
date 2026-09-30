@@ -543,11 +543,47 @@ pub fn open_url(app: AppHandle, url: String) -> Result<(), String> {
 
 // ---- PDF ----
 
-/// 获取 PDF 条目的 (总页数, 模式标记)。第二元素:0=自动全册,1=按需模式。
+/// 获取 PDF 条目状态:(总页数, 按需标记, 已完成页数, 直提标记)。
+/// completed 供前端在「事件早于条目入 store 被丢」的竞态下自愈(直提 0 秒完成)。
 #[tauri::command]
-pub fn pdf_page_info(id: String) -> Option<(u32, u32)> {
+pub fn pdf_page_info(id: String) -> Option<(u32, u32, u32, u32)> {
     let meta = crate::ingest::PDF_PAGES.lock().unwrap().get(&id).cloned()?;
-    Some((meta.count, if meta.on_demand { 1 } else { 0 }))
+    let completed = crate::ingest::PDF_RESULTS
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|m| m.len() as u32)
+        .unwrap_or(0);
+    Some((
+        meta.count,
+        if meta.on_demand { 1 } else { 0 },
+        completed,
+        if meta.extract { 1 } else { 0 },
+    ))
+}
+
+/// 拉取某页识别结果(事件竞态丢失后的自愈路径)。
+#[tauri::command]
+pub fn pdf_page_outcome(id: String, page: u32) -> Option<crate::dto::OcrOutcomeDto> {
+    crate::ingest::PDF_RESULTS
+        .lock()
+        .unwrap()
+        .get(&id)
+        .and_then(|m| m.get(&page))
+        .cloned()
+}
+
+/// 整册切换识别方式:extract=true 直提(需文本层),false=OCR。
+/// 返回是否真的切换了(模式相同时 false)。
+#[tauri::command]
+pub fn pdf_set_mode(app: AppHandle, id: String, extract: bool) -> Result<bool, String> {
+    crate::ingest::set_pdf_mode(&app, &id, extract)
+}
+
+/// 本页强制 OCR(文本层 PDF 上重识别这一页,覆盖直提结果)。
+#[tauri::command]
+pub fn pdf_ocr_page(app: AppHandle, id: String, page: u32) {
+    crate::ingest::recognize_page_force_ocr(&app, &id, page);
 }
 
 /// 暂停该 PDF 的识别(静默中断,不产生错误结果)。返回当前已完成页数。
@@ -1084,6 +1120,7 @@ pub async fn pdf_extract_all(
                     num_det_retried: 0,
                     num_flipped: 0,
                     num_unread: 0,
+                    extracted: true,
                     timings: crate::dto::TimingsDto {
                         det_pre_ms: 0.0, det_infer_ms: 0.0, det_post_ms: 0.0,
                         crop_ms: 0.0, cls_ms: 0.0, rec_pre_ms: 0.0, rec_infer_ms: 0.0,

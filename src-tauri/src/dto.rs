@@ -57,6 +57,9 @@ pub struct OcrResultDto {
     pub num_flipped: u32,
     pub num_unread: u32,
     pub timings: TimingsDto,
+    /// 文本层直提(非 OCR):行框是全宽近似,画布不显示框线;UI 标注来源
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub extracted: bool,
 }
 
 /// 命令/事件的统一载荷：成功带 result，失败带 error。
@@ -270,6 +273,7 @@ pub fn result_dto(r: &qppocr::OcrResult) -> OcrResultDto {
         num_det_retried: r.num_det_retried as u32,
         num_flipped: r.num_flipped as u32,
         num_unread: r.num_unread as u32,
+        extracted: false,
         timings: TimingsDto {
             det_pre_ms: r1(r.timings.det_pre_ms),
             det_infer_ms: r1(r.timings.det_infer_ms),

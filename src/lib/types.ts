@@ -40,6 +40,8 @@ export interface OcrResult {
   numFlipped: number;
   numUnread: number;
   timings: Timings;
+  /** 文本层直提(非 OCR):框线是全宽近似,画布不显示;UI 标注来源 */
+  extracted?: boolean;
 }
 
 export interface OcrOutcome {
@@ -180,6 +182,8 @@ export interface ItemState {
     ocrDone: number;
     /** 按需模式:翻到哪页识别哪页(大文档默认) */
     onDemand?: boolean;
+    /** 文本层直提模式(整册;可切换) */
+    extract?: boolean;
     /** 识别状态机:idle(按需未跑)| running | paused | done */
     ocrState?: 'idle' | 'running' | 'paused' | 'done';
   };

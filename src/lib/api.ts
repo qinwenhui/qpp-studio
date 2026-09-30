@@ -73,11 +73,17 @@ export const api = {
   revealPath: (path: string) => invoke<void>('reveal_path', { path }),
   openUrl: (url: string) => invoke<void>('open_url', { url }),
 
-  pdfPageInfo: (id: string) => invoke<[number, number] | null>('pdf_page_info', { id }),
+  pdfPageInfo: (id: string) =>
+    invoke<[number, number, number, number] | null>('pdf_page_info', { id }),
   pdfPause: (id: string) => invoke<number | null>('pdf_pause', { id }),
   pdfResume: (id: string) => invoke<boolean>('pdf_resume', { id }),
   pdfRecognizePage: (id: string, page: number) =>
     invoke<void>('pdf_recognize_page', { id, page }),
+  pdfPageOutcome: (id: string, page: number) =>
+    invoke<OcrOutcome | null>('pdf_page_outcome', { id, page }),
+  pdfSetMode: (id: string, extract: boolean) =>
+    invoke<boolean>('pdf_set_mode', { id, extract }),
+  pdfOcrPage: (id: string, page: number) => invoke<void>('pdf_ocr_page', { id, page }),
   pdfRenderPage: (id: string, page: number, dpi?: number) =>
     invoke<PdfPage>('pdf_render_page', { id, page, dpi }),
   pdfOcrRange: (id: string, startPage: number, endPage: number) =>

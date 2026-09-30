@@ -74,8 +74,9 @@ pub struct PdfOcrState {
     /// 暂停旗标:与「取消」语义分离——暂停静默中断(kill worker/串行 break),
     /// 不对未完成页合成错误回执,继续时这些页会重跑
     pub pause: Arc<AtomicBool>,
-    /// 按需单页识别队列(LIFO:最后翻到的页优先),唯一执行线程消费
-    ondemand: Mutex<Vec<(String, u32)>>,
+    /// 按需单页识别队列(LIFO:最后翻到的页优先),唯一执行线程消费。
+    /// 元素 (id, page, force_ocr):force_ocr 让文本层 PDF 的单页也走 OCR
+    ondemand: Mutex<Vec<(String, u32, bool)>>,
     ondemand_cv: Condvar,
 }
 
@@ -155,7 +156,17 @@ pub fn remaining_pages(id: &str) -> Option<(u32, Vec<u32>)> {
 /// 都要 fs::read 整份 PDF + load_doc 全文解析(pdfium 全局锁串行化),
 /// 快速翻完一本 = 几十个线程堆积,主进程 PDF 功能整体假死。
 pub fn recognize_single_page(app: &AppHandle, id: &str, page: u32) {
-    {
+    push_ondemand(app, id, page, false);
+}
+
+/// 强制单页 OCR(文本层 PDF 用户点「本页改用OCR」):绕过直提分支;
+/// 已有结果也重跑(用户显式要求)。
+pub fn recognize_page_force_ocr(app: &AppHandle, id: &str, page: u32) {
+    push_ondemand(app, id, page, true);
+}
+
+fn push_ondemand(app: &AppHandle, id: &str, page: u32, force_ocr: bool) {
+    if !force_ocr {
         let results = PDF_RESULTS.lock().unwrap();
         if results.get(id).map_or(false, |m| m.contains_key(&page)) {
             return; // 已有结果
@@ -163,10 +174,68 @@ pub fn recognize_single_page(app: &AppHandle, id: &str, page: u32) {
     }
     let state = app.state::<crate::AppCtx>();
     let mut q = state.pdf.ondemand.lock().unwrap();
-    q.retain(|(i, p)| !(i == id && *p == page)); // 去重:同页旧请求出队
-    q.push((id.to_string(), page));
+    q.retain(|(i, p, _)| !(i == id && *p == page)); // 去重:同页旧请求出队
+    q.push((id.to_string(), page, force_ocr));
     drop(q);
     state.pdf.ondemand_cv.notify_one();
+}
+
+/// 整册切换识别方式(直提 ⇄ OCR):清空已有结果,按新模式重跑全部页。
+/// 切直提前校验文本层;清结果让 done 计数从 0 重新爬。
+pub fn set_pdf_mode(app: &AppHandle, id: &str, extract: bool) -> Result<bool, String> {
+    let state = app.state::<crate::AppCtx>();
+    let meta = PDF_PAGES
+        .lock()
+        .unwrap()
+        .get(id)
+        .cloned()
+        .ok_or("PDF 条目不存在")?;
+    if meta.extract == extract {
+        return Ok(false);
+    }
+    if extract {
+        // 切直提必须有文本层(ingest 时的 can_extract 可能是 false)
+        let src = PDF_STORE
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or("PDF 条目不存在")?;
+        let bytes = std::fs::read(&src).map_err(|e| format!("读取 PDF 失败: {e}"))?;
+        if !crate::pdf::has_text_layer(&bytes) {
+            return Err("此 PDF 没有文本层,只能 OCR".into());
+        }
+    }
+    // 清结果 + 改模式 + 作废队列中同 id 旧任务 → 全册重跑
+    PDF_RESULTS.lock().unwrap().insert(id.to_string(), BTreeMap::new());
+    PDF_PAGES.lock().unwrap().get_mut(id).unwrap().extract = extract;
+    state.pdf.queue.lock().unwrap().retain(|j| j.id != id);
+    let name = state
+        .items
+        .read()
+        .unwrap()
+        .get(id)
+        .map(|i| i.name.clone())
+        .unwrap_or_default();
+    let src = PDF_STORE
+        .lock()
+        .unwrap()
+        .get(id)
+        .cloned()
+        .ok_or("PDF 条目不存在")?;
+    enqueue_pdf_ocr(
+        app,
+        PdfOcrJob {
+            id: id.to_string(),
+            name,
+            src_path: src,
+            pages: (0..meta.count).collect(),
+            total: meta.count,
+            weights: meta.weights,
+            extract,
+        },
+    );
+    Ok(true)
 }
 
 /// 常驻按需执行线程:逐页 渲染+OCR。同一 PDF 的字节与文档解析结果缓存
@@ -183,7 +252,7 @@ pub fn spawn_ondemand_worker(app: AppHandle) {
 
         loop {
             // 等任务(LIFO:最后翻到的页最先处理)
-            let (id, page) = {
+            let (id, page, force_ocr) = {
                 let mut q = state.pdf.ondemand.lock().unwrap();
                 loop {
                     if let Some(job) = q.pop() {
@@ -192,8 +261,8 @@ pub fn spawn_ondemand_worker(app: AppHandle) {
                     q = state.pdf.ondemand_cv.wait(q).unwrap();
                 }
             };
-            // 已有结果(可能被舰队补齐)/条目已删 → 跳过
-            {
+            // 已有结果(可能被舰队补齐)/条目已删 → 跳过;强制 OCR 例外
+            if !force_ocr {
                 let results = PDF_RESULTS.lock().unwrap();
                 if results.get(&id).map_or(true, |m| m.contains_key(&page)) {
                     continue;
@@ -232,7 +301,8 @@ pub fn spawn_ondemand_worker(app: AppHandle) {
                 continue;
             }
             let doc = cur_doc.as_ref().expect("刚校验过");
-            let outcome = if cur_extract {
+            // 文本层 PDF 单页默认直提;force_ocr(用户点「本页改用OCR」)走 OCR
+            let outcome = if cur_extract && !force_ocr {
                 // 文本层 PDF:单页也走直提(毫秒级,无需引擎)
                 crate::pdf::extract_doc_text_lines(doc, page, crate::pdf::DPI_OCR)
                     .map(extract_lines_to_outcome)
@@ -505,6 +575,7 @@ fn extract_lines_to_outcome(
             num_flipped: 0,
             num_unread: 0,
             timings: Default::default(),
+            extracted: true,
         }),
     }
 }

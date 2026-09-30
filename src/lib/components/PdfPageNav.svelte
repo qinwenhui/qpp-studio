@@ -75,6 +75,24 @@
     }
   }
 
+  /** 整册切换识别方式(仅文本层 PDF):清结果按新模式全册重跑 */
+  async function switchMode() {
+    if (!active || !pdf) return;
+    const toExtract = !pdf.extract;
+    try {
+      const changed = await api.pdfSetMode(active.item.id, toExtract);
+      if (!changed) return;
+      pdf.extract = toExtract;
+      pdf.ocrDone = 0;
+      pdf.ocrState = 'running';
+      pdf.onDemand = false;
+      active.outcome = undefined;
+      active.phase = 'queued';
+    } catch (e) {
+      toast('error', String(e));
+    }
+  }
+
   function onJumpKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -190,7 +208,18 @@
     {/if}
 
     {#if active?.canExtract}
-      <span class="ocr-badge" title="数字原生 PDF:文本层直提,无需 OCR">直提</span>
+      {#if pdf?.extract}
+        <span class="ocr-badge" title="整册走文本层直提:毫秒级/页,无框线">直提</span>
+      {:else}
+        <span class="ocr-badge" title="整册走 OCR 识别:有精确框线">OCR</span>
+      {/if}
+      <button
+        class="ctrl-btn"
+        onclick={() => switchMode()}
+        title={pdf?.extract ? '整册改用 OCR(有框线,慢)' : '整册改用文本层直提(毫秒级,无框线)'}>
+        <Icon name="rotateCcw" size={12} />
+        {pdf?.extract ? '改用OCR' : '改用直提'}
+      </button>
     {/if}
 
     <span class="page-hint">{active?.item.name}</span>

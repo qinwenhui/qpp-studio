@@ -104,6 +104,20 @@
     }
   }
 
+  /** 本页强制 OCR(直提页上):走后端按需执行线程,结果写回该页,
+   *  翻回本页不再回退成直提结果 */
+  async function reOcrPage() {
+    if (!active || !active.pdfPages) return;
+    const page = active.pdfPages.current;
+    active.phase = 'running';
+    active.outcome = undefined;
+    try {
+      await api.pdfOcrPage(active.item.id, page);
+    } catch (e) {
+      toast('error', String(e));
+    }
+  }
+
   async function cancelBatch() {
     await api.batchCancel();
     toast('info', '已请求取消,进行中的图片会完成当前张');
@@ -115,6 +129,17 @@
     <div class="title-row">
       <ModeSwitch />
       <span class="title" title={active?.item.name}>{active?.item.name ?? '识别结果'}</span>
+      {#if active?.outcome?.result?.extracted}
+        <span class="src-badge extract" title="结果来自 PDF 文本层直提(毫秒级,无框线)">直提</span>
+        {#if active.item.origin === 'pdf'}
+          <button
+            class="badge-btn"
+            onclick={() => reOcrPage()}
+            title="这一页改用 OCR 识别(可得到精确框线,约零点几秒)">本页改用OCR</button>
+        {/if}
+      {:else if lines.length}
+        <span class="src-badge" title="结果来自 OCR 识别">OCR</span>
+      {/if}
       {#if active && (active.phase === 'done' || active.phase === 'error')}
         <button
           class="icon-btn rerun-btn"
@@ -267,6 +292,40 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .src-badge {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 8px;
+    border-radius: 999px;
+    flex: none;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--text-faint) 14%, transparent);
+  }
+  .src-badge.extract {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .badge-btn {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: 999px;
+    flex: none;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    transition: all var(--speed-fast) var(--ease-out);
+    white-space: nowrap;
+  }
+  .badge-btn:hover {
+    background: var(--accent-soft);
   }
   .count {
     margin-left: auto;

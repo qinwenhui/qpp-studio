@@ -331,10 +331,10 @@
 
     ctx.drawImage(imgEl, 0, 0);
 
-    // 识别框
+    // 识别框(直提结果除外:行框是全宽近似,画出来必然错位,不如不画)
     const focused = app.focus && app.focus.id === active?.item.id ? app.focus.line : -1;
     const selected = app.selected && app.selected.id === active?.item.id ? app.selected.line : -1;
-    if (app.showBoxes && lines.length) {
+    if (app.showBoxes && lines.length && !result?.extracted) {
       for (let i = 0; i < lines.length; i++) {
         const l = lines[i];
         const isFocus = i === focused || i === hoverLine;
