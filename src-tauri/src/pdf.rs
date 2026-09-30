@@ -26,6 +26,14 @@ pub fn load_doc<'a>(bytes: &'a [u8]) -> Result<PdfDocument<'a>, String> {
         .map_err(|e| format!("PDF 加载失败: {e}"))
 }
 
+/// 从文件加载文档:pdfium 自管文件读取,返回的文档只借用 'static 的
+/// PDFIUM 单例、不借用调用方数据——可长期缓存(按需识别的执行线程用)。
+pub fn load_doc_from_file(path: &Path) -> Result<PdfDocument<'static>, String> {
+    PDFIUM
+        .load_pdf_from_file(path, None)
+        .map_err(|e| format!("PDF 加载失败: {e}"))
+}
+
 /// 探测 PDF 页数(只读元数据,不解码像素)。
 pub fn page_count(bytes: &[u8]) -> Result<u32, String> {
     let doc = load_doc(bytes)?;
@@ -99,6 +107,24 @@ pub fn render_page(
 ) -> Result<(u32, u32, Vec<u8>), String> {
     let doc = load_doc(bytes)?;
     render_doc_page(&doc, page_index, dpi)
+}
+
+lazy_static::lazy_static! {
+    /// 主进程「读文件+渲染」互斥段:pdfium 本就全局串行,这里顺带把整份
+    /// PDF 字节的并发驻留上限压到一份——快速翻页/预取风暴下防止
+    /// 「并发线程数 × 文件大小」的内存堆积。
+    static ref FILE_RENDER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}
+
+/// 读文件 + 渲染一页(翻页视图/预取用),全程持锁(见 FILE_RENDER_LOCK)。
+pub fn render_page_from_file(
+    path: &Path,
+    page_index: u32,
+    dpi: u16,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let _guard = FILE_RENDER_LOCK.lock().unwrap();
+    let bytes = std::fs::read(path).map_err(|e| format!("读取 PDF 失败: {e}"))?;
+    render_page(&bytes, page_index, dpi)
 }
 
 /// 判断 PDF 是否包含文本层(数字原生,非扫描件)。

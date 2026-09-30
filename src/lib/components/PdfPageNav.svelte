@@ -53,12 +53,13 @@
     }
   }
 
-  /** 继续 / 按需模式的「识别全部」:只跑缺失页 */
+  /** 继续 / 按需模式的「识别全部」:只跑缺失页。
+   *  无缺失页时后端返回 false——直接落定「已完成」,别乐观等事件。 */
   async function resumeOcr() {
     if (!active || !pdf) return;
     try {
-      await api.pdfResume(active.item.id);
-      pdf.ocrState = 'running';
+      const hadWork = await api.pdfResume(active.item.id);
+      pdf.ocrState = hadWork ? 'running' : 'done';
       pdf.onDemand = false;
     } catch (e) {
       toast('error', String(e));
@@ -134,21 +135,29 @@
 
     <!-- 识别控制 + 进度(状态机:按需 idle / 运行 running / 已暂停 paused / 完成 done) -->
     {#if onDemand && (ocrState === 'idle' || ocrState === 'done')}
-      {#if pageBusy}
-        <span class="ocr-progress" title="按需模式:翻到哪页识别哪页">
-          <span class="spin"><Icon name="spinner" size={11} spinning /></span>
-          <span>本页识别中</span>
+      {#if ocrDone >= count && count > 0}
+        <!-- 按需翻完全本:与整册完成同款标记,不再显示「识别全部」 -->
+        <span class="ocr-done">
+          <Icon name="check" size={11} />
+          已完成
         </span>
       {:else}
-        <span class="ocr-badge" title="大文档默认按需:翻到哪页识别哪页">按需</span>
+        {#if pageBusy}
+          <span class="ocr-progress" title="按需模式:翻到哪页识别哪页">
+            <span class="spin"><Icon name="spinner" size={11} spinning /></span>
+            <span>本页识别中</span>
+          </span>
+        {:else}
+          <span class="ocr-badge" title="大文档默认按需:翻到哪页识别哪页">按需</span>
+        {/if}
+        <button
+          class="ctrl-btn"
+          onclick={() => resumeOcr()}
+          title="识别全部 {count} 页(可随时暂停)">
+          <Icon name="layers" size={13} />
+          识别全部
+        </button>
       {/if}
-      <button
-        class="ctrl-btn"
-        onclick={() => resumeOcr()}
-        title="识别全部 {count} 页(可随时暂停)">
-        <Icon name="layers" size={13} />
-        识别全部
-      </button>
     {:else if ocrState === 'running' && count > 0}
       <span class="ocr-progress">
         <span class="spin"><Icon name="spinner" size={11} spinning /></span>

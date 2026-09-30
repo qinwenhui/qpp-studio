@@ -553,12 +553,13 @@ pub fn pdf_pause(app: AppHandle, id: String) -> Option<u32> {
 }
 
 /// 继续识别缺失页(按需模式的「识别全部」也是它):入队只含未完成页的任务。
+/// 返回是否真的有活干——false 时前端应直接落定「已完成」,别乐观等待事件。
 #[tauri::command]
-pub fn pdf_resume(app: AppHandle, state: State<AppCtx>, id: String) -> Result<(), String> {
+pub fn pdf_resume(app: AppHandle, state: State<AppCtx>, id: String) -> Result<bool, String> {
     let (total, pages) =
         crate::ingest::remaining_pages(&id).ok_or("PDF 条目不存在")?;
     if pages.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let meta = crate::ingest::PDF_PAGES
         .lock()
@@ -590,7 +591,7 @@ pub fn pdf_resume(app: AppHandle, state: State<AppCtx>, id: String) -> Result<()
             weights: meta.weights,
         },
     );
-    Ok(())
+    Ok(true)
 }
 
 /// 按需识别单页(翻到未识别页时前端触发;已识别/在途则静默跳过)。
@@ -612,8 +613,7 @@ fn render_view_page_to_file(
         .get(id)
         .cloned()
         .ok_or("PDF 条目不存在")?;
-    let bytes = std::fs::read(&src).map_err(|e| format!("读取 PDF 失败: {e}"))?;
-    let (w, h, rgb) = crate::pdf::render_page(&bytes, page, crate::pdf::DPI_VIEW)?;
+    let (w, h, rgb) = crate::pdf::render_page_from_file(&src, page, crate::pdf::DPI_VIEW)?;
     let path = state.dirs.inbox.join(format!("{id}_p{page}.jpg"));
     let img = image::RgbImage::from_raw(w, h, rgb).ok_or("渲染数据无效")?;
     let f = std::fs::File::create(&path).map_err(|e| format!("保存失败: {e}"))?;

@@ -12,7 +12,7 @@
 use crate::dto::ImageItemDto;
 use crate::dto::OcrOutcomeDto;
 use crate::media::mime_for;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -29,9 +29,6 @@ lazy_static::lazy_static! {
     /// 按需模式下只积累翻过的页——识别内存随使用量增长,不随文档大小)
     pub static ref PDF_RESULTS: Mutex<HashMap<String, BTreeMap<u32, OcrOutcomeDto>>> =
         Mutex::new(HashMap::new());
-    /// 按需单页识别在途去重
-    static ref PAGE_INFLIGHT: Mutex<HashSet<(String, u32)>> =
-        Mutex::new(HashSet::new());
 }
 
 /// 舰队分治的页数门槛:低于此 worker 启动+模型加载不划算。
@@ -73,6 +70,9 @@ pub struct PdfOcrState {
     /// 暂停旗标:与「取消」语义分离——暂停静默中断(kill worker/串行 break),
     /// 不对未完成页合成错误回执,继续时这些页会重跑
     pub pause: Arc<AtomicBool>,
+    /// 按需单页识别队列(LIFO:最后翻到的页优先),唯一执行线程消费
+    ondemand: Mutex<Vec<(String, u32)>>,
+    ondemand_cv: Condvar,
 }
 
 impl Default for PdfOcrState {
@@ -82,6 +82,8 @@ impl Default for PdfOcrState {
             cv: Condvar::new(),
             fleet_active: AtomicBool::new(false),
             pause: Arc::new(AtomicBool::new(false)),
+            ondemand: Mutex::new(Vec::new()),
+            ondemand_cv: Condvar::new(),
         }
     }
 }
@@ -144,8 +146,10 @@ pub fn remaining_pages(id: &str) -> Option<(u32, Vec<u32>)> {
     Some((meta.count, pages))
 }
 
-/// 按需识别单页:翻到未识别页时前端触发。后台线程复用串行路径
-/// (引擎有界等待/渲染/识别/入库/事件全现成),在途去重、已识别跳过。
+/// 按需识别单页:翻到未识别页时前端触发。只入 LIFO 队列(最新翻到的页
+/// 优先),由唯一的常驻执行线程处理——**绝不能每页起一个线程**:每个线程
+/// 都要 fs::read 整份 PDF + load_doc 全文解析(pdfium 全局锁串行化),
+/// 快速翻完一本 = 几十个线程堆积,主进程 PDF 功能整体假死。
 pub fn recognize_single_page(app: &AppHandle, id: &str, page: u32) {
     {
         let results = PDF_RESULTS.lock().unwrap();
@@ -153,32 +157,108 @@ pub fn recognize_single_page(app: &AppHandle, id: &str, page: u32) {
             return; // 已有结果
         }
     }
-    if !PAGE_INFLIGHT.lock().unwrap().insert((id.to_string(), page)) {
-        return; // 已在识别
-    }
-    let app = app.clone();
-    let id = id.to_string();
+    let state = app.state::<crate::AppCtx>();
+    let mut q = state.pdf.ondemand.lock().unwrap();
+    q.retain(|(i, p)| !(i == id && *p == page)); // 去重:同页旧请求出队
+    q.push((id.to_string(), page));
+    drop(q);
+    state.pdf.ondemand_cv.notify_one();
+}
+
+/// 常驻按需执行线程:逐页 渲染+OCR。同一 PDF 的字节与文档解析结果缓存
+/// 复用(整本翻完只读一次文件、解析一次);引擎有界等待;条目删除/页失效跳过。
+/// 注意:此处不看 pause——按需单页是用户正在看的页,立即响应优先。
+pub fn spawn_ondemand_worker(app: AppHandle) {
     std::thread::spawn(move || {
         let state = app.state::<crate::AppCtx>();
-        let meta = PDF_PAGES.lock().unwrap().get(&id).cloned();
-        let src = PDF_STORE.lock().unwrap().get(&id).cloned();
-        if let (Some(meta), Some(src)) = (meta, src) {
-            if page < meta.count {
-                serial_pdf_ocr(
-                    &app,
-                    &PdfOcrJob {
-                        id: id.clone(),
-                        name: String::new(),
-                        src_path: src,
-                        pages: vec![page],
-                        total: meta.count,
-                        weights: Vec::new(),
-                    },
-                );
+        // 文档缓存:load_doc_from_file 不借用调用方数据,换 PDF 时 drop 旧的即可
+        let mut cur_id = String::new();
+        let mut cur_doc: Option<pdfium_render::prelude::PdfDocument<'static>> = None;
+        let mut cur_count = 0u32;
+
+        loop {
+            // 等任务(LIFO:最后翻到的页最先处理)
+            let (id, page) = {
+                let mut q = state.pdf.ondemand.lock().unwrap();
+                loop {
+                    if let Some(job) = q.pop() {
+                        break job;
+                    }
+                    q = state.pdf.ondemand_cv.wait(q).unwrap();
+                }
+            };
+            // 已有结果(可能被舰队补齐)/条目已删 → 跳过
+            {
+                let results = PDF_RESULTS.lock().unwrap();
+                if results.get(&id).map_or(true, |m| m.contains_key(&page)) {
+                    continue;
+                }
             }
+            if !PDF_PAGES.lock().unwrap().contains_key(&id) {
+                continue;
+            }
+            // 换 PDF 时重建文档缓存
+            if cur_id != id || cur_doc.is_none() {
+                cur_doc = None;
+                let Some(src) = PDF_STORE.lock().unwrap().get(&id).cloned() else {
+                    continue;
+                };
+                let Some(meta) = PDF_PAGES.lock().unwrap().get(&id).cloned() else {
+                    continue;
+                };
+                cur_count = meta.count;
+                match crate::pdf::load_doc_from_file(&src) {
+                    Ok(d) => {
+                        cur_doc = Some(d);
+                        cur_id = id.clone();
+                    }
+                    Err(e) => {
+                        // 读不了/解析不了:该页给错误回执,不让前端悬等
+                        cur_id.clear();
+                        let out = crate::dto::outcome_err(format!("读取 PDF 失败: {e}"));
+                        let d = insert_result(&id, page, out.clone());
+                        emit_page(&app, &id, page, &out, d, cur_count.max(page + 1));
+                        continue;
+                    }
+                }
+            }
+            if page >= cur_count {
+                continue;
+            }
+            let doc = cur_doc.as_ref().expect("刚校验过");
+            // 引擎有界等待(启动头几秒)
+            let mut engine = state.engine.current();
+            for _ in 0..150 {
+                if engine.is_some() {
+                    break;
+                }
+                if !PDF_PAGES.lock().unwrap().contains_key(&id) {
+                    engine = None;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                engine = state.engine.current();
+            }
+            let Some(engine) = engine else { continue };
+            let outcome = match crate::pdf::render_doc_page(doc, page, crate::pdf::DPI_OCR)
+                .and_then(|(w, h, rgb)| {
+                    qppocr::rgb_from_bytes(w, h, rgb).map_err(|e| e.to_string())
+                }) {
+                Ok(img) => {
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        engine.run(&img)
+                    }));
+                    crate::dto::outcome_from(match r {
+                        Ok(Ok(v)) => Ok(v),
+                        Ok(Err(e)) => Err(e),
+                        Err(_) => Err(qppocr::Error::Image("引擎内部错误".into())),
+                    })
+                }
+                Err(e) => crate::dto::outcome_err(e),
+            };
+            let d = insert_result(&id, page, outcome.clone());
+            emit_page(&app, &id, page, &outcome, d, cur_count);
         }
-        let _ = state;
-        PAGE_INFLIGHT.lock().unwrap().remove(&(id, page));
     });
 }
 

@@ -239,6 +239,7 @@ fn bootstrap(app: AppHandle) {
     }
     windowfx::apply_theme_effect(&app, &settings.theme);
     ingest::spawn_pdf_queue(app.clone());
+    ingest::spawn_ondemand_worker(app.clone());
     history::spawn_flush_thread(app.clone());
     let _ = app.emit("app://ready", ());
 }
