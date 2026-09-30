@@ -44,21 +44,46 @@
       .join('\n');
   }
 
-  async function exportAs(fmt: 'txt' | 'json') {
+  /** 版式感知 Markdown:行高聚类判标题,行距突变分段落(与后端 merged md 同规则) */
+  function toMarkdown(): string {
+    const metrics = lines.map((l) => {
+      const ys = l.pts.map((p) => p[1]);
+      const h = Math.max(1, Math.max(...ys) - Math.min(...ys));
+      return { h, cy: (Math.max(...ys) + Math.min(...ys)) / 2 };
+    });
+    const sorted = metrics.map((m) => m.h).sort((a, b) => a - b);
+    const med = sorted[sorted.length >> 1] ?? 1;
+    let out = '';
+    let prev: { cy: number; h: number } | null = null;
+    lines.forEach((l, i) => {
+      const text = l.text.trim();
+      if (!text) return;
+      const { h, cy } = metrics[i];
+      if (prev && cy - prev.cy > prev.h * 1.8) out += '\n';
+      const level = h >= med * 1.5 ? 1 : h >= med * 1.2 ? 2 : 0;
+      out += (level ? '#'.repeat(level) + ' ' : '') + text + '\n';
+      prev = { cy, h };
+    });
+    return out;
+  }
+
+  async function exportAs(fmt: 'txt' | 'json' | 'md') {
     if (!active?.outcome?.ok) return;
     const base = active.item.name.replace(/\.[^.]+$/, '');
     const content =
       fmt === 'txt'
         ? allText()
-        : JSON.stringify(
-            {
-              image: { name: active.item.name, width: active.item.w, height: active.item.h },
-              timings: active.outcome.result?.timings,
-              lines: lines.map((l) => ({ text: l.text, confidence: l.confidence, box: l.pts })),
-            },
-            null,
-            2,
-          );
+        : fmt === 'md'
+          ? toMarkdown()
+          : JSON.stringify(
+              {
+                image: { name: active.item.name, width: active.item.w, height: active.item.h },
+                timings: active.outcome.result?.timings,
+                lines: lines.map((l) => ({ text: l.text, confidence: l.confidence, box: l.pts })),
+              },
+              null,
+              2,
+            );
     try {
       const path = await api.exportContent(content, fmt, `${base}.${fmt}`);
       toast('success', `已导出: ${path}`);
@@ -67,7 +92,7 @@
     }
   }
 
-  async function exportPdf(fmt: 'txt' | 'json') {
+  async function exportPdf(fmt: 'txt' | 'json' | 'md') {
     if (!active || active.item.origin !== 'pdf') return;
     try {
       const content = await api.pdfExportMerged(active.item.id, fmt);
@@ -189,6 +214,10 @@
         <Icon name="download" size={14} />
         TXT
       </button>
+      <button class="btn" onclick={() => exportAs('md')} title="版式感知:行高判标题层级、行距分段落">
+        <Icon name="download" size={14} />
+        MD
+      </button>
       <button class="btn" onclick={() => exportAs('json')}>
         <Icon name="download" size={14} />
         JSON
@@ -197,6 +226,10 @@
         <button class="btn" onclick={() => exportPdf('txt')} title="按页序合并全部已识别页">
           <Icon name="layers" size={14} />
           合并 TXT
+        </button>
+        <button class="btn" onclick={() => exportPdf('md')} title="整册版式感知 Markdown(带页分隔)">
+          <Icon name="layers" size={14} />
+          合并 MD
         </button>
       {/if}
       <span class="ms" title="引擎端到端耗时">

@@ -380,6 +380,7 @@ fn bench_pdf(app: AppHandle, pdf_path: &str) {
             pages: (0..pages).collect(),
             total: pages,
             weights: weights.clone(),
+            extract: false,
         };
         let stop = Arc::new(AtomicBool::new(false));
         let (peak_one, peak_sum) = spawn_rss_sampler(&stop);

@@ -64,8 +64,11 @@ export const api = {
   removeItems: (ids: string[]) => invoke<void>('remove_items', { ids }),
   clearItems: () => invoke<void>('clear_items'),
 
-  exportContent: (content: string, fmt: 'txt' | 'json', defaultName: string) =>
-    invoke<string>('export_content', { content, fmt, defaultName }),
+  exportContent: (
+    content: string,
+    fmt: 'txt' | 'json' | 'md',
+    defaultName: string,
+  ) => invoke<string>('export_content', { content, fmt, defaultName }),
   copyText: (text: string) => invoke<void>('copy_text', { text }),
   revealPath: (path: string) => invoke<void>('reveal_path', { path }),
   openUrl: (url: string) => invoke<void>('open_url', { url }),
@@ -81,6 +84,6 @@ export const api = {
     invoke<void>('pdf_ocr_range', { id, startPage, endPage }),
   pdfExtractAll: (id: string) =>
     invoke<unknown[]>('pdf_extract_all', { id }),
-  pdfExportMerged: (id: string, fmt: 'txt' | 'json') =>
+  pdfExportMerged: (id: string, fmt: 'txt' | 'json' | 'md') =>
     invoke<string>('pdf_export_merged', { parentId: id, fmt }),
 };

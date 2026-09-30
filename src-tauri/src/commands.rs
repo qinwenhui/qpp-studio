@@ -501,7 +501,11 @@ pub async fn export_content(
     fmt: String,
     default_name: String,
 ) -> Result<String, String> {
-    let ext = if fmt == "json" { "json" } else { "txt" };
+    let ext = match fmt.as_str() {
+        "json" => "json",
+        "md" => "md",
+        _ => "txt",
+    };
     let path = tauri::async_runtime::spawn_blocking(move || {
         rfd::FileDialog::new()
             .add_filter("文件", &[ext])
@@ -589,6 +593,7 @@ pub fn pdf_resume(app: AppHandle, state: State<AppCtx>, id: String) -> Result<bo
             pages,
             total,
             weights: meta.weights,
+            extract: false,
         },
     );
     Ok(true)
@@ -842,74 +847,126 @@ pub async fn pdf_ocr_range(
     .map_err(|e| e)
 }
 
-/// 合并 PDF 识别结果导出(按页序拼接,带页码分隔)。
+/// 行集 → Markdown(版式感知):行高相对聚类判标题层级,垂直间隙突变分段落。
+/// OCR 只有几何信息(无字体/加粗),这是诚实能做到的「保留格式」。
+fn lines_to_markdown(lines: &[crate::dto::TextLineDto], base_level: usize) -> String {
+    // 每行 (高度, 中心y)
+    let metrics: Vec<(f32, f32)> = lines
+        .iter()
+        .map(|l| {
+            let ys = l.pts.map(|p| p[1]);
+            let hmax = ys.iter().cloned().fold(f32::MIN, f32::max);
+            let hmin = ys.iter().cloned().fold(f32::MAX, f32::min);
+            ((hmax - hmin).max(1.0), (hmax + hmin) / 2.0)
+        })
+        .collect();
+    let mut hs: Vec<f32> = metrics.iter().map(|(h, _)| *h).collect();
+    hs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let med_h = hs.get(hs.len() / 2).copied().unwrap_or(1.0);
+
+    let mut out = String::new();
+    let mut prev: Option<(f32, f32)> = None; // (中心y, 行高)
+    for (l, (h, cy)) in lines.iter().zip(metrics) {
+        let text = l.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        // 段落:与上一行垂直间隙 > 1.8×行高 → 空行分隔
+        if let Some((p_cy, p_h)) = prev {
+            if cy - p_cy > p_h * 1.8 {
+                out.push('\n');
+            }
+        }
+        // 标题层级:行高 ≥1.5×中位 → 大标题,≥1.2× → 次级
+        let level = if h >= med_h * 1.5 {
+            base_level
+        } else if h >= med_h * 1.2 {
+            base_level + 1
+        } else {
+            0
+        };
+        if level > 0 {
+            for _ in 0..level {
+                out.push('#');
+            }
+            out.push(' ');
+        }
+        out.push_str(text);
+        out.push('\n');
+        prev = Some((cy, h));
+    }
+    out
+}
+
+/// 合并 PDF 识别结果导出(txt/json/md)。数据源是 PDF_RESULTS(按页有序)——
+/// 不再依赖旧管线的逐页条目。
 #[tauri::command]
 pub fn pdf_export_merged(
     state: State<AppCtx>,
     parent_id: String,
     fmt: String,
 ) -> Result<String, String> {
-    let items = state.items.read().unwrap();
-    let mut pages: Vec<(&String, &crate::ingest::ImageItem)> = items
-        .iter()
-        .filter(|(_, it)| it.origin == "pdf-page" && it.path.to_str() == Some(parent_id.as_str()))
-        .map(|(k, v)| (k, v))
-        .collect();
-    if pages.is_empty() {
-        return Err("没有已识别的页面".into());
+    let results = crate::ingest::PDF_RESULTS
+        .lock()
+        .unwrap()
+        .get(&parent_id)
+        .cloned()
+        .ok_or("PDF 条目不存在")?;
+    if results.is_empty() {
+        return Err("尚无识别结果(识别完成后可导出)".into());
     }
-    let order = state.order.read().unwrap();
-    pages.sort_by_key(|(id, _)| order.iter().position(|x| x == *id).unwrap_or(usize::MAX));
-
-    let parent_name = items
+    let parent_name = state
+        .items
+        .read()
+        .unwrap()
         .get(&parent_id)
         .map(|i| i.name.clone())
         .unwrap_or_else(|| "PDF".into());
 
     match fmt.as_str() {
         "txt" => {
-            let mut out = String::new();
-            out.push_str(&format!("# {} — OCR 全文
-
-", parent_name));
-            for (pid, it) in &pages {
-                if let Some(entry) = state.history.get(pid) {
-                    let page_label = it.name.rsplit('·').next().unwrap_or("").trim();
-                    out.push_str(&format!("--- {} ---
-", page_label));
-                    if let Some(r) = &entry.outcome.result {
-                        for line in &r.lines {
-                            if !line.text.is_empty() {
-                                out.push_str(&line.text);
-                                out.push('\n');
-                            }
+            let mut out = format!("# {parent_name} — 全文\n\n");
+            for (page, outcome) in &results {
+                out.push_str(&format!("--- 第 {} 页 ---\n", page + 1));
+                if let Some(r) = &outcome.result {
+                    for line in &r.lines {
+                        if !line.text.is_empty() {
+                            out.push_str(line.text.trim_end());
+                            out.push('\n');
                         }
                     }
-                    out.push('\n');
+                }
+                out.push('\n');
+            }
+            Ok(out)
+        }
+        "md" => {
+            let mut out = format!("# {parent_name}\n");
+            for (page, outcome) in &results {
+                out.push_str(&format!("\n---\n\n## 第 {} 页\n\n", page + 1));
+                if let Some(r) = &outcome.result {
+                    out.push_str(&lines_to_markdown(&r.lines, 3));
                 }
             }
             Ok(out)
         }
         "json" => {
-            let mut page_results: Vec<serde_json::Value> = Vec::new();
-            for (pid, it) in &pages {
-                if let Some(entry) = state.history.get(pid) {
-                    if let Some(r) = &entry.outcome.result {
-                        let page_label = it.name.rsplit('·').next().unwrap_or("").trim();
-                        page_results.push(serde_json::json!({
-                            "page": page_label,
-                            "text": r.lines.iter()
-                                .filter(|l| !l.text.is_empty())
-                                .map(|l| l.text.as_str())
-                                .collect::<Vec<_>>()
-                                .join("
-"),
-                            "lineCount": r.lines.len(),
-                            "totalMs": r.timings.total_ms,
-                        }));
-                    }
-                }
-            }
+            let page_results: Vec<serde_json::Value> = results
+                .iter()
+                .map(|(page, outcome)| {
+                    let r = outcome.result.as_ref();
+                    serde_json::json!({
+                        "page": page + 1,
+                        "text": r.map(|r| r.lines.iter()
+                            .filter(|l| !l.text.is_empty())
+                            .map(|l| l.text.trim())
+                            .collect::<Vec<_>>()
+                            .join("\n")).unwrap_or_default(),
+                        "lineCount": r.map(|r| r.lines.len()).unwrap_or(0),
+                        "totalMs": r.map(|r| r.timings.total_ms).unwrap_or(0.0),
+                    })
+                })
+                .collect();
             let json = serde_json::json!({
                 "source": parent_name,
                 "pages": page_results,

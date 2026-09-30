@@ -86,17 +86,6 @@
     }
   }
 
-  async function extractAll() {
-    if (!active) return;
-    try {
-      toast('info', '正在从文本层提取(毫秒级)…');
-      await api.pdfExtractAll(active.item.id);
-      toast('success', '提取完成');
-    } catch (e) {
-      toast('error', String(e));
-    }
-  }
-
   function onWindowKeydown(e: KeyboardEvent) {
     if (!isPdf) return;
     const tag = (e.target as HTMLElement)?.tagName;
@@ -201,14 +190,7 @@
     {/if}
 
     {#if active?.canExtract}
-      <button
-        class="extract-btn"
-        onclick={() => extractAll()}
-        title="此 PDF 有文本层,直接提取(毫秒级,跳过 OCR)"
-      >
-        <Icon name="zap" size={13} />
-        一键提取
-      </button>
+      <span class="ocr-badge" title="数字原生 PDF:文本层直提,无需 OCR">直提</span>
     {/if}
 
     <span class="page-hint">{active?.item.name}</span>
@@ -357,23 +339,6 @@
     filter: brightness(1.1);
   }
 
-  .extract-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    height: 24px;
-    padding: 0 10px;
-    border-radius: 999px;
-    font-size: 11.5px;
-    font-weight: 600;
-    color: var(--accent-contrast);
-    background: var(--accent);
-    transition: all var(--speed-fast) var(--ease-out);
-    white-space: nowrap;
-  }
-  .extract-btn:hover {
-    filter: brightness(1.1);
-  }
 
   .page-hint {
     margin-left: auto;

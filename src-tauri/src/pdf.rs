@@ -160,6 +160,15 @@ pub fn extract_text_lines(
     dpi: u16,
 ) -> Result<Vec<(String, f32, [[f32; 2]; 4])>, String> {
     let doc = load_doc(bytes)?;
+    extract_doc_text_lines(&doc, page_index, dpi)
+}
+
+/// extract_text_lines 的文档复用版(整册提取只解析一次)。
+pub fn extract_doc_text_lines(
+    doc: &PdfDocument<'_>,
+    page_index: u32,
+    dpi: u16,
+) -> Result<Vec<(String, f32, [[f32; 2]; 4])>, String> {
     let page = doc
         .pages()
         .get(page_index as i32)
