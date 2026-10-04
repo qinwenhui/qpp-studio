@@ -22,7 +22,7 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 
 # 引擎：crates.io 发布版
-qppocr = "0.2.1"
+qppocr = "0.3.1"
 
 # 截图（多屏捕获）
 xcap = "0.9"

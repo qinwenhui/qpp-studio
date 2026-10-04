@@ -3358,9 +3358,9 @@ dependencies = [
 
 [[package]]
 name = "qppocr"
-version = "0.2.1"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1350bc4f500e58cd9b53011aca256c227df29ce4af51fb415246bc11517c15be"
+checksum = "5d2371865f396bd4e55429da8d9ff0da40361f9974d16e11f9e45268b33db69b"
 dependencies = [
  "image",
  "qppocr-core",
@@ -3368,18 +3368,18 @@ dependencies = [
 
 [[package]]
 name = "qppocr-core"
-version = "0.2.1"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f338d03f1ca21d1181d9c857e2d0561fc4ebe5e7a80e5a9a753e4c7812bb89c1"
+checksum = "06fcba73f1b8950a923497412621b03b36492ba66ae10b36a0622c06cabc35df"
 dependencies = [
  "qppocr-kernels",
 ]
 
 [[package]]
 name = "qppocr-kernels"
-version = "0.2.1"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12d0187895098264c3d9b1e24108eadc5ce43339c308c881f9263a474b8c66d4"
+checksum = "bcafdf7cf67be0315c7dc7daa49db9c22f6ba436ac2a8212d40097092cf6e0bd"
 
 [[package]]
 name = "quick-error"
