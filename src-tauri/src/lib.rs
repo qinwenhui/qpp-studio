@@ -10,6 +10,8 @@ pub mod hw;
 pub mod image_util;
 pub mod hotkey;
 pub mod ingest;
+#[cfg(target_os = "macos")]
+pub mod menu;
 pub mod media;
 pub mod pdf;
 pub mod screenshot;
@@ -258,6 +260,34 @@ fn bootstrap(app: AppHandle) {
     let _ = app.emit("app://ready", ());
 }
 
+/// 主窗口:配置无法按平台分值,统一在 Rust 侧按平台创建。
+/// - Windows/Linux:无边框自绘标题栏(前端 TitleBar 画三圆点)
+/// - macOS:decorations + titleBarStyle Overlay——原生交通灯悬浮,
+///   内容延伸到标题栏下(前端左区让位),窗口 transparent 走 macos-private-api
+fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
+    let builder = tauri::WebviewWindowBuilder::new(
+        app,
+        "main",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("QPP Studio")
+    .inner_size(1280.0, 800.0)
+    .min_inner_size(960.0, 600.0)
+    .center()
+    .transparent(true);
+    // drag-drop 处理器默认启用(与原 tauri.conf.json 的 dragDropEnabled 一致)
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .decorations(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.decorations(false);
+
+    builder.build()?;
+    Ok(())
+}
+
 pub fn run() {
     // 工作线程 panic 默认无输出,静默吞掉故障 —— 开发期打出来
     if cfg!(debug_assertions) {
@@ -282,6 +312,9 @@ pub fn run() {
             media::handle(ctx, request, responder)
         })
         .setup(move |app| {
+            create_main_window(app)?;
+            #[cfg(target_os = "macos")]
+            menu::setup(app)?;
             let handle = app.handle().clone();
             bootstrap(handle.clone());
             if selftest {
@@ -294,6 +327,7 @@ pub fn run() {
             commands::engine_status,
             commands::hw_info,
             commands::device_benchmark,
+            commands::set_window_title,
             commands::pick_images,
             commands::add_files,
             commands::read_clipboard_image,

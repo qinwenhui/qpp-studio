@@ -12,20 +12,6 @@
   "app": {
     "withGlobalTauri": false,
     "macOSPrivateApi": true,
-    "windows": [
-      {
-        "label": "main",
-        "title": "QPP Studio",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 960,
-        "minHeight": 600,
-        "center": true,
-        "decorations": false,
-        "transparent": true,
-        "dragDropEnabled": true
-      }
-    ],
     "security": {
       "csp": "default-src 'self'; img-src 'self' media: http://media.localhost blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src ipc: http://ipc.localhost ws://localhost:5173"
     }

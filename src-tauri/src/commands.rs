@@ -21,6 +21,17 @@ pub fn app_init(app: AppHandle, state: State<AppCtx>) -> InitInfoDto {
     }
 }
 
+/// 窗口标题显示当前文档名(图片/PDF 文件名),由前端在当前条目变化时调用;
+/// None 恢复默认标题。mac 上标题进 Cmd+Tab/程序坞;Windows 无边框窗口
+/// 标题不可见,但任务栏 tooltip 同样受益。
+#[tauri::command]
+pub fn set_window_title(app: AppHandle, title: Option<String>) {
+    if let Some(w) = app.get_webview_window("main") {
+        let text = title.unwrap_or_else(|| "QPP Studio".into());
+        let _ = w.set_title(&text);
+    }
+}
+
 #[tauri::command]
 pub fn engine_status(state: State<AppCtx>) -> EngineStatusDto {
     state.engine.status()

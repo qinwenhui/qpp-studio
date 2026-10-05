@@ -1,0 +1,16 @@
+/**
+ * macOS 平台覆盖:窗口材质(NSVisualEffectView,见 windowfx.rs)要在 UI 上
+ * 透出来,三套玻璃系主题的 --bg-app 在 mac 上改半透明;可爱粉彩/古典纸墨
+ * 不启用材质,保持不透明纯色底(把已挂的材质视图完全遮住)。
+ * 选择器双属性(0,2,0)恒高于主题文件的单 [data-theme](0,1,0),与加载顺序无关。
+ */
+
+[data-platform='macos'][data-theme='dark-tech'] {
+  --bg-app: rgb(14 17 22 / 0.72);
+}
+
+[data-platform='macos'][data-theme='light-refined'] {
+  --bg-app: rgb(245 243 238 / 0.78);
+}
+
+/* macos-glass 的 --bg-app 本就是半透明(theme-macos-glass.css),无需覆盖 */

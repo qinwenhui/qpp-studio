@@ -64,12 +64,15 @@
     pendingHotkey = '';
   }
 
+  /** 存储统一用 ctrl 表示主修饰键;macOS 录制时 Cmd(metaKey)落成 ctrl,
+   *  注册端(hotkey.rs)按平台把 ctrl 映射为 Cmd 加速键 */
   function comboFromEvent(e: KeyboardEvent): string | null {
+    const isMac = app.platform === 'macos';
     const parts: string[] = [];
-    if (e.ctrlKey) parts.push('ctrl');
+    if (isMac ? e.metaKey : e.ctrlKey) parts.push('ctrl');
     if (e.altKey) parts.push('alt');
     if (e.shiftKey) parts.push('shift');
-    if (e.metaKey) parts.push('meta');
+    if (!isMac && e.metaKey) parts.push('meta');
     let key = e.key.toLowerCase();
     if (['control', 'alt', 'shift', 'meta'].includes(key)) return null; // 单独按修饰键
     if (key === ' ') key = 'space';
@@ -79,6 +82,14 @@
     parts.push(key);
     if (parts.length < 2) return null; // 必须带修饰键,避免吞掉普通按键
     return parts.join('+');
+  }
+
+  /** 显示用:mac 上主修饰键叫 Cmd */
+  function fmtHotkey(s: string): string {
+    return s
+      .split('+')
+      .map((t) => (app.platform === 'macos' && t === 'ctrl' ? 'cmd' : t))
+      .join('+');
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -294,11 +305,11 @@
           {#if recording}
             按下新组合键…(Esc 取消)
           {:else}
-            <kbd>{pendingHotkey || settings.hotkey}</kbd>
+            <kbd>{fmtHotkey(pendingHotkey || settings.hotkey)}</kbd>
             <span class="rec-hint">点击修改</span>
           {/if}
         </button>
-        <p class="note">需包含至少一个修饰键(Ctrl/Alt/Shift);保存后全局生效</p>
+        <p class="note">需包含至少一个修饰键({app.platform === 'macos' ? 'Cmd' : 'Ctrl'}/Alt/Shift);保存后全局生效</p>
       </div>
     </AccordionSection>
 

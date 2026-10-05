@@ -6,6 +6,7 @@
 @import './styles/theme-macos-glass.css';
 @import './styles/theme-cute.css';
 @import './styles/theme-classical.css';
+@import './styles/platform-macos.css';
 
 *,
 *::before,

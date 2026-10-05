@@ -39,6 +39,18 @@
       app.booted = true;
 
       const unlisteners: Promise<UnlistenFn>[] = [
+        // mac 原生菜单栏动作(open/paste/shot/settings),与应用内快捷键同款处理
+        listen<string>('app://menu', (e) => {
+          if (e.payload === 'open') {
+            void openFromPicker();
+          } else if (e.payload === 'paste') {
+            void pasteFromClipboard();
+          } else if (e.payload === 'shot') {
+            void api.screenshotBegin().catch((err) => toast('error', String(err)));
+          } else if (e.payload === 'settings') {
+            setView('settings');
+          }
+        }),
         listen<EngineStatus>('engine://status', (e) => syncEngine(e.payload)),
         listen<{
           id: string;
@@ -173,30 +185,46 @@
     dropWatchdog = setTimeout(() => (app.dropActive = false), 3000);
   }
 
+  /** 打开/粘贴:快捷键与 mac 菜单栏共用 */
+  async function openFromPicker() {
+    try {
+      addItems(await api.pickImages());
+    } catch (err) {
+      toast('error', String(err));
+    }
+  }
+
+  async function pasteFromClipboard() {
+    try {
+      addItems([await api.readClipboardImage()]);
+    } catch {
+      /* 剪贴板没有图片,安静忽略 */
+    }
+  }
+
   async function onKeydown(e: KeyboardEvent) {
     // 输入框内不拦截
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
       e.preventDefault();
-      try {
-        addItems(await api.pickImages());
-      } catch (err) {
-        toast('error', String(err));
-      }
+      void openFromPicker();
     } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
       e.preventDefault();
-      try {
-        addItems([await api.readClipboardImage()]);
-      } catch {
-        /* 剪贴板没有图片,安静忽略 */
-      }
+      void pasteFromClipboard();
     } else if ((e.ctrlKey || e.metaKey) && e.key >= '1' && e.key <= '3') {
       e.preventDefault();
       const views = ['records', 'stats', 'settings'] as const;
       setView(views[+e.key - 1]);
     }
   }
+
+  // 当前文档名 → 窗口标题(mac 进 Cmd+Tab/菜单;Windows 任务栏 tooltip)+ mac 标题栏居中
+  $effect(() => {
+    const name = getActiveItem()?.item.name ?? '';
+    app.docName = name;
+    void api.setWindowTitle(name || null).catch(() => {});
+  });
 </script>
 
 <svelte:window onkeydown={onKeydown} onblur={() => (app.dropActive = false)} />
