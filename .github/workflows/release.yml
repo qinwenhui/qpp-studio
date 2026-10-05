@@ -40,7 +40,13 @@ jobs:
         run: |
           mkdir -p artifact
           cp "src-tauri/target/release/bundle/nsis/"*-setup.exe artifact/
-          cp src-tauri/target/release/qpp-studio.exe artifact/qpp-studio-portable.exe
+          # 便携版:裸 release exe 旁没有打包 resources(models/pdfium 都缺),
+          # 必须组装 exe + models + pdfium.dll 再压缩,否则引擎起不来、PDF 全废
+          mkdir -p portable/models
+          cp src-tauri/target/release/qpp-studio.exe portable/
+          cp -r src-tauri/models-bundle/models/. portable/models/
+          cp src-tauri/models-bundle/pdfium.dll portable/
+          powershell -NoProfile -Command "Compress-Archive -Path portable -DestinationPath artifact/qpp-studio-portable-windows-x64.zip"
           cd artifact && ls -la
 
       - name: 上传产物(每次构建可见)

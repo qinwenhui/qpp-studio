@@ -167,7 +167,9 @@ fn emit_error(app: &AppHandle, msg: &str) {
 /// 按设置隐藏主窗口(shot_hide=true 且窗口当前可见)。
 /// 返回是否真的隐藏了(finish/cancel 负责恢复)。
 /// ⚠ hide() 在 Windows 上是异步投递到主线程的——本函数跑在工作线程,
-/// 调用方必须在捕获前给足等待(此处 sleep 320ms)。
+/// 必须等「合成器真的把窗口从屏幕上拿掉」再捕获:WGC 的帧管线有 1-2 帧
+/// 延迟,只等 is_visible() 翻转(消息已处理)不够,盲等固定时长在慢机上
+/// 会残留旧画面(实测 Windows 11 + release 构建可复现窗口残影)。
 fn maybe_hide_main(app: &AppHandle) -> bool {
     let state = app.state::<crate::AppCtx>();
     if !state.settings.read().unwrap().shot_hide {
@@ -180,14 +182,31 @@ fn maybe_hide_main(app: &AppHandle) -> bool {
         return false;
     }
     let _ = w.hide();
-    // 轮询等隐藏真正生效(hide 是投递到主线程的异步消息),
-    // 再留 120ms 给合成器,确保捕获画面里没有我们自己
-    for _ in 0..20 {
+    // 1) 轮询等 hide 消息被主线程处理(is_visible 翻转),放宽到 600ms
+    for _ in 0..30 {
         if !w.is_visible().unwrap_or(false) {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    std::thread::sleep(std::time::Duration::from_millis(120));
+    // 2) 等合成器追平:DwmFlush 每次调用阻塞到下一次 DWM 合成完成,
+    //    3 帧 ≈ 覆盖 WGC 帧管线的滞后;再补 60ms 兜底
+    wait_compositor();
     true
 }
+
+/// 等 DWM 合成器追上窗口可见性变化(仅 Windows;其他平台空实现)。
+#[cfg(windows)]
+fn wait_compositor() {
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmFlush() -> i32;
+    }
+    for _ in 0..3 {
+        unsafe { DwmFlush() };
+    }
+    std::thread::sleep(std::time::Duration::from_millis(60));
+}
+
+#[cfg(not(windows))]
+fn wait_compositor() {}
