@@ -178,13 +178,17 @@
             onclick={() => updateSettings({ device: 'gpu' })}
             title={
               !hw || hw.gpus.length === 0
-                ? '未检测到可用的 Vulkan 1.4+ 设备(装/升级显卡驱动后重启应用)'
+                ? app.platform === 'macos'
+                  ? '当前平台不支持 GPU 加速(需 Vulkan,macOS 无 Vulkan loader);CPU 走 ARM NEON 已高度优化'
+                  : '未检测到可用的 Vulkan 1.4+ 设备(装/升级显卡驱动后重启应用)'
                 : hw.gpus.map((g) => `${g.name} (${g.api})`).join(', ')
             }
           >GPU{hw && hw.gpus.length > 0 ? '' : '(未检测到)'}</button>
         </div>
         <p class="note">
-          {#if settings.device === 'gpu'}
+          {#if app.platform === 'macos' && (!hw || hw.gpus.length === 0)}
+            GPU 加速需 Vulkan(Windows/Linux);macOS 走 CPU NEON,单张同样毫秒级
+          {:else if settings.device === 'gpu'}
             GPU 走 Vulkan 1.4+:tiny 档输出与 CPU 完全一致;small 档存在极个别行的浮点末位差异——需要与 CPU 完全一致请切回 CPU。冷启动首图略慢
           {:else}
             GPU 不一定比 CPU 快(冷启动慢、老核显可能反超);切换后引擎重建,进行中的识别用旧引擎跑完
