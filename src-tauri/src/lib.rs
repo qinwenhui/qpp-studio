@@ -199,13 +199,26 @@ fn bootstrap(app: AppHandle) {
     // 硬件与并行策略一次性打日志(设置面板也有展示,这里给 dev 控制台/排障用)
     {
         let state = app.state::<AppCtx>();
-        let p = hw::plan(&state.hw, tier, settings.workers_override);
+        let device = settings::parse_device(&settings.device);
+        let p = hw::plan_for(&state.hw, tier, settings.workers_override, &device);
+        let gpu_list = if state.hw.gpus.is_empty() {
+            "无 GPU".to_string()
+        } else {
+            state
+                .hw
+                .gpus
+                .iter()
+                .map(|g| format!("{} ({})", g.name, g.api))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         eprintln!(
-            "[hw] {} · P{}/L{} · {:.1}GB → {}: {} 进程 × {} 线程 · 小批量并发 {}{}",
+            "[hw] {} · P{}/L{} · {:.1}GB · GPU: {} → {}: {} 进程 × {} 线程 · 小批量并发 {}{}",
             state.hw.cpu_brand,
             state.hw.physical_cores,
             state.hw.logical_cores,
             state.hw.total_mem as f64 / 1_073_741_824.0,
+            gpu_list,
             settings::tier_str(tier),
             p.workers,
             p.threads_each,
@@ -228,6 +241,7 @@ fn bootstrap(app: AppHandle) {
             enhance_contrast: settings.enhance_contrast,
             upscale: settings.upscale,
             special: settings::is_special_preset(&settings.preset),
+            device: settings::parse_device(&settings.device),
         },
     );
 
@@ -279,6 +293,7 @@ pub fn run() {
             commands::app_init,
             commands::engine_status,
             commands::hw_info,
+            commands::device_benchmark,
             commands::pick_images,
             commands::add_files,
             commands::read_clipboard_image,

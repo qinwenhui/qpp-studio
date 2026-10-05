@@ -51,7 +51,7 @@ fn bench(app: AppHandle, dir: &str) {
     let models_dir = state.engine.models_dir();
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
     let workers_override = state.settings.read().unwrap().workers_override;
-    let plan = crate::hw::plan(&state.hw, spec.tier, workers_override);
+    let plan = crate::hw::plan_for(&state.hw, spec.tier, workers_override, &spec.device);
     blog!(
         "[bench] hw: {} · P{}/L{} · {:.1}GB → {}进程×{}线程",
         state.hw.cpu_brand,
@@ -142,7 +142,7 @@ fn bench(app: AppHandle, dir: &str) {
         std::thread::scope(|s| {
             for chunk in chunks {
                 let models_dir = models_dir2.clone();
-                let spec = spec;
+                let spec = spec.clone();
                 s.spawn(move || {
                     bench_worker_chunk(&models_dir, spec, t_each, chunk);
                 });
@@ -225,6 +225,7 @@ fn bench_worker_chunk(
         "tier": crate::settings::tier_str(spec.tier),
         "preset": crate::settings::preset_str(spec.preset),
         "threads": threads,
+        "device": if matches!(spec.device, qppocr::DeviceChoice::Gpu { .. }) { "gpu" } else { "cpu" },
         "orientation": spec.orientation,
         "enhanceContrast": spec.enhance_contrast,
         "upscale": spec.upscale,
@@ -290,7 +291,7 @@ fn bench_pdf(app: AppHandle, pdf_path: &str) {
     let spec = state.engine.spec();
     let models_dir = state.engine.models_dir();
     let workers_override = state.settings.read().unwrap().workers_override;
-    let plan = crate::hw::plan(&state.hw, spec.tier, workers_override);
+    let plan = crate::hw::plan_for(&state.hw, spec.tier, workers_override, &spec.device);
     blog!(
         "[bench-pdf] hw: {} · P{}/L{} · {:.1}GB → {}进程×{}线程",
         state.hw.cpu_brand,
@@ -513,6 +514,46 @@ fn run(app: AppHandle) {
     );
     if let Some(e) = &out2.error {
         println!("[selftest] ocr error: {e}");
+    }
+
+    // 4b) GPU 冒烟(检测到 Vulkan 设备时;不判 PASS,仅记录与 CPU 的对照)
+    {
+        let state = app.state::<crate::AppCtx>();
+        if !state.hw.gpus.is_empty() {
+            let gpu_list = state
+                .hw
+                .gpus
+                .iter()
+                .map(|g| format!("{} ({})", g.name, g.api))
+                .collect::<Vec<_>>()
+                .join(", ");
+            blog!("[selftest] GPU 检测: {gpu_list}");
+            let mut spec = state.engine.spec();
+            spec.device = qppocr::DeviceChoice::gpu();
+            let dir = state.engine.models_dir();
+            let built = Instant::now();
+            match crate::engine::build_engine(&spec, state.engine.threads, &dir) {
+                Ok(engine) => {
+                    let _ = engine.run_image_file(&test_path); // 热身(含形状计划构建)
+                    let t1 = Instant::now();
+                    let lines = engine
+                        .run_image_file(&test_path)
+                        .map(|r| r.lines.len())
+                        .unwrap_or(0);
+                    blog!(
+                        "[selftest] GPU 冒烟: 热身后 {:.1}ms · {} 行 (CPU warm {:.1}ms · {} 行; GPU 构建耗时 {:.1}s)",
+                        t1.elapsed().as_secs_f64() * 1000.0,
+                        lines,
+                        warm.0,
+                        warm.1,
+                        built.elapsed().as_secs_f64()
+                    );
+                }
+                Err(e) => {
+                    blog!("[selftest] GPU 冒烟失败: {e}");
+                }
+            }
+        }
     }
 
     // 5) media:// 协议:开截图覆盖窗(页面会真实请求冻结 BMP),再取消

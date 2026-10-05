@@ -111,7 +111,8 @@
       <div class="row"><span class="k">模型档位</span><span class="v">{TIER_LABEL[app.engineTier] ?? app.engineTier}</span></div>
       <div class="row"><span class="k">预设</span><span class="v">{PRESET_LABEL[app.enginePreset] ?? app.enginePreset}</span></div>
       <div class="row"><span class="k">线程</span><span class="v">{app.engineThreads === 0 ? '自动' : app.engineThreads}</span></div>
-      <div class="row" title="纯 Rust · CPU (AVX2+FMA)"><span class="k">后端</span><span class="v">高性能 QPPOCR 引擎</span></div>
+      <div class="row" title="实际计算设备(引擎构建结果)"><span class="k">设备</span><span class="v">{app.engineDevice === 'gpu' ? 'GPU (Vulkan)' : 'CPU'}</span></div>
+      <div class="row" title="纯 Rust · 自研引擎"><span class="k">后端</span><span class="v">高性能 QPPOCR 引擎</span></div>
       <div class="row path" title={app.engineModelsDir}>
         <span class="k">模型目录</span><span class="v">{app.engineModelsDir}</span>
       </div>

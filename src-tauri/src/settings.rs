@@ -11,6 +11,9 @@ pub struct Settings {
     pub theme: String,
     /// tiny | small | medium
     pub tier: String,
+    /// 计算设备:cpu | gpu(GPU 需 Vulkan 1.4+;不默认开——冷启动慢、
+    /// small 档有浮点末位差异、老机驱动玄学,由用户实测后选择)
+    pub device: String,
     /// speed | balanced | accuracy
     pub preset: String,
     /// 0 = 自动（按可用核数）。首次构建引擎时锁定，改动重启后生效
@@ -38,6 +41,7 @@ impl Default for Settings {
         Self {
             theme: "macos-glass".into(),
             tier: "tiny".into(),
+            device: "cpu".into(),
             preset: "speed".into(),
             threads: 0,
             hotkey: "ctrl+shift+o".into(),
@@ -84,6 +88,15 @@ pub fn parse_tier(s: &str) -> Option<qppocr::Tier> {
         "small" => Some(qppocr::Tier::Small),
         "medium" => Some(qppocr::Tier::Medium),
         _ => None,
+    }
+}
+
+/// 设备字符串 → DeviceChoice("gpu" → Vulkan 自动选择,其余 CPU)。
+pub fn parse_device(s: &str) -> qppocr::DeviceChoice {
+    if s == "gpu" {
+        qppocr::DeviceChoice::gpu()
+    } else {
+        qppocr::DeviceChoice::Cpu
     }
 }
 

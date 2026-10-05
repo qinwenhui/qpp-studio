@@ -441,6 +441,7 @@ pub fn spawn_proc_batch(
         "tier": crate::settings::tier_str(spec.tier),
         "preset": crate::settings::preset_str(spec.preset),
         "threads": t_each,
+        "device": if matches!(spec.device, qppocr::DeviceChoice::Gpu { .. }) { "gpu" } else { "cpu" },
         "orientation": spec.orientation,
         "enhanceContrast": spec.enhance_contrast,
         "upscale": spec.upscale,

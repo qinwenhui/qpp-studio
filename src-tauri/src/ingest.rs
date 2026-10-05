@@ -399,7 +399,8 @@ fn run_pdf_job(app: &AppHandle, job: PdfOcrJob) {
     }
 
     let workers_override = state.settings.read().unwrap().workers_override;
-    let plan = crate::hw::plan(&state.hw, state.engine.spec().tier, workers_override);
+    let spec = state.engine.spec();
+    let plan = crate::hw::plan_for(&state.hw, spec.tier, workers_override, &spec.device);
     // 自测/基准:强制小文档也走舰队路径
     let force = std::env::var("QPP_PDF_FLEET_FORCE").is_ok();
     let use_fleet =
@@ -515,6 +516,7 @@ pub(crate) fn run_pdf_fleet(app: &AppHandle, job: &PdfOcrJob, plan: &crate::hw::
         "tier": crate::settings::tier_str(spec.tier),
         "preset": crate::settings::preset_str(spec.preset),
         "threads": plan.threads_each.max(1),
+        "device": if matches!(spec.device, qppocr::DeviceChoice::Gpu { .. }) { "gpu" } else { "cpu" },
         "orientation": spec.orientation,
         "enhanceContrast": spec.enhance_contrast,
         "upscale": spec.upscale,

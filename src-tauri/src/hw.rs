@@ -16,10 +16,18 @@ use qppocr::Tier;
 const GIB: u64 = 1 << 30;
 
 /// 单 worker 进程峰值内存预算(tiny/small);medium 模型太重不分治,无预算。
-/// tiny = QPP_BENCH_PDF 实测(35页/8×2):峰值 188MB × 1.3 余量 ≈ 0.24,取 0.25GiB;
-/// small 未经实测,按 tiny×2 估(模型 31MB vs 6.3MB,推理工作集同量级)。
+/// CPU:tiny = QPP_BENCH_PDF 实测(35页/8×2)峰值 188MB × 1.3 ≈ 0.25GiB;
+/// small 按 tiny×2 估。GPU:引擎侧实测(qppocr bench,Intel Arc 核显/UMA)
+/// tiny ~2.6GB / small ~1.4GB,核显显存即系统内存,×1.1 余量。
 const WORKER_BUDGET_TINY: u64 = GIB / 4;
 const WORKER_BUDGET_SMALL: u64 = GIB / 2;
+const WORKER_BUDGET_GPU_TINY: u64 = GIB * 3 - GIB / 10;
+const WORKER_BUDGET_GPU_SMALL: u64 = GIB + GIB / 2;
+
+/// GPU 模式 worker 进程上限:GPU 并发 4 进程仍有 2×+ 收益,但每 worker
+/// GB 级内存(核显吃系统内存),且 GPU 内部已并行(prefers_host_parallelism
+/// = false)——封 2 是吞吐/内存的稳妥平衡。
+const GPU_WORKER_CAP: usize = 2;
 
 /// 给 OS + 应用本体(UI/WebView/主进程引擎)预留的内存。
 fn mem_reserve(total: u64) -> u64 {
@@ -34,6 +42,14 @@ fn worker_budget(tier: Tier) -> u64 {
     }
 }
 
+fn worker_budget_gpu(tier: Tier) -> u64 {
+    match tier {
+        Tier::Tiny => WORKER_BUDGET_GPU_TINY,
+        Tier::Small => WORKER_BUDGET_GPU_SMALL,
+        Tier::Medium => 0, // GPU 侧从未基准,不冒进
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HwInfo {
     pub cpu_brand: String,
@@ -41,6 +57,15 @@ pub struct HwInfo {
     pub logical_cores: usize,
     /// 总内存(字节);0 = 探测失败(跳过内存闸)
     pub total_mem: u64,
+    /// GPU 清单(qppocr-gpu Vulkan 枚举;无 loader/无设备 = 空列表)
+    pub gpus: Vec<GpuInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GpuInfo {
+    pub name: String,
+    /// API 版本串,如 "vulkan 1.4"
+    pub api: String,
 }
 
 #[derive(Debug, Clone)]
@@ -72,29 +97,63 @@ pub fn detect() -> HwInfo {
         .map(|c| c.brand().trim().to_string())
         .filter(|b| !b.is_empty())
         .unwrap_or_else(|| "未知 CPU".into());
+    // GPU 枚举(qppocr-gpu):无 loader/无 ICD = 空列表,绝不当错误;
+    // Vulkan loader 一旦装载即常驻(引擎侧设计),启动只调这一次
+    let gpus = qppocr_gpu::list_devices()
+        .into_iter()
+        .map(|d| GpuInfo {
+            name: d.name,
+            api: d.api,
+        })
+        .collect();
     HwInfo {
         cpu_brand,
         physical_cores: physical.max(1),
         logical_cores: logical.max(1),
         total_mem: sys.total_memory(),
+        gpus,
     }
 }
 
-/// 优化表:硬件 × 档位 × (可选)手动覆盖 → 并行策略。
-///
-/// - K = min(物理核, 档位上限{tiny:8, small:4}, max(1, 逻辑核/2))
-///   ——「总线程≈逻辑核 + worker 数≤物理核」两条实测原则的交集
-/// - t = clamp(逻辑核/K, 1, 4)
+/// 优化表(CPU):硬件 × 档位 × (可选)手动覆盖 → 并行策略。
+pub fn plan(hw: &HwInfo, tier: Tier, workers_override: usize) -> ParallelPlan {
+    plan_with(hw, tier, workers_override, false)
+}
+
+/// 优化表(按引擎设备):GPU 模式换用显存预算与 worker 上限。
+pub fn plan_for(
+    hw: &HwInfo,
+    tier: Tier,
+    workers_override: usize,
+    device: &qppocr::DeviceChoice,
+) -> ParallelPlan {
+    plan_with(hw, tier, workers_override, matches!(device, qppocr::DeviceChoice::Gpu { .. }))
+}
+
+/// 优化表本体:
+/// - CPU:K = min(物理核, 档位上限{tiny:8, small:4}, max(1, 逻辑核/2))
+///   ——「总线程≈逻辑核 + worker 数≤物理核」两条实测原则的交集;
+///   t = clamp(逻辑核/K, 1, 4)
+/// - GPU:K 上限 2(GB 级显存/worker + 引擎内部已并行),
+///   预算换 WORKER_BUDGET_GPU_*(核显上显存即系统内存)
 /// - 内存闸:mem_cap = (总内存 - 预留) / 单 worker 预算,K 压到 mem_cap
 /// - override > 0 时优先,但 medium 不解禁、内存闸仍生效(手动也拦不住 OOM)
-pub fn plan(hw: &HwInfo, tier: Tier, workers_override: usize) -> ParallelPlan {
-    let inproc = match tier {
-        Tier::Tiny => 4,
-        _ => 2,
+fn plan_with(hw: &HwInfo, tier: Tier, workers_override: usize, gpu: bool) -> ParallelPlan {
+    let inproc = if gpu {
+        2 // GPU 内部已并行,进程内并发只做解码重叠
+    } else {
+        match tier {
+            Tier::Tiny => 4,
+            _ => 2,
+        }
     }
     .min(hw.logical_cores.max(1));
 
-    let budget = worker_budget(tier);
+    let budget = if gpu {
+        worker_budget_gpu(tier)
+    } else {
+        worker_budget(tier)
+    };
     if budget == 0 {
         return ParallelPlan {
             workers: 0,
@@ -113,6 +172,8 @@ pub fn plan(hw: &HwInfo, tier: Tier, workers_override: usize) -> ParallelPlan {
 
     let want = if workers_override > 0 {
         workers_override
+    } else if gpu {
+        GPU_WORKER_CAP
     } else {
         let cap = match tier {
             Tier::Tiny => 8,
@@ -150,6 +211,7 @@ mod tests {
             physical_cores: p,
             logical_cores: l,
             total_mem: gb * GIB,
+            gpus: Vec::new(),
         }
     }
 
@@ -211,5 +273,32 @@ mod tests {
         // 单核极端:L=1 → max(1, L/2)=1, t=clamp(1/1)=1
         let p = plan(&hw(1, 1, 4), Tiny, 0);
         assert_eq!((p.workers, p.threads_each), (1, 1));
+    }
+
+    #[test]
+    fn table_gpu() {
+        use qppocr::DeviceChoice;
+
+        // GPU 封顶 2:32G 机 tiny → K=2,t=clamp(18/2)=4,inproc=2
+        let p = plan_for(&hw(12, 18, 32), Tiny, 0, &DeviceChoice::gpu());
+        assert_eq!((p.workers, p.threads_each, p.inproc_concurrency), (2, 4, 2));
+        assert!(!p.clamped_by_mem);
+
+        // 16G 机 GPU tiny:预算 2.9G,闸 (16-4)/2.9=4 → K=2 不压
+        let p = plan_for(&hw(8, 16, 16), Tiny, 0, &DeviceChoice::gpu());
+        assert_eq!(p.workers, 2);
+
+        // 6G 机 GPU tiny:闸 (6-2)/2.9=1 → 压到 1
+        let p = plan_for(&hw(8, 8, 6), Tiny, 0, &DeviceChoice::gpu());
+        assert_eq!(p.workers, 1);
+        assert!(p.clamped_by_mem);
+
+        // medium GPU 同样不分治(引擎侧从未基准)
+        let p = plan_for(&hw(16, 32, 64), Medium, 0, &DeviceChoice::gpu());
+        assert_eq!(p.workers, 0);
+
+        // CPU 路径不受影响
+        let p = plan_for(&hw(12, 18, 32), Tiny, 0, &DeviceChoice::Cpu);
+        assert_eq!((p.workers, p.threads_each), (8, 2));
     }
 }

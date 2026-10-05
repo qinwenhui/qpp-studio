@@ -84,6 +84,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ash"
+version = "0.38.0+1.3.281"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
+dependencies = [
+ "libloading 0.8.9",
+]
+
+[[package]]
 name = "ashpd"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3342,6 +3351,7 @@ dependencies = [
  "lazy_static",
  "pdfium-render",
  "qppocr",
+ "qppocr-gpu",
  "rfd",
  "serde",
  "serde_json",
@@ -3364,6 +3374,7 @@ checksum = "5d2371865f396bd4e55429da8d9ff0da40361f9974d16e11f9e45268b33db69b"
 dependencies = [
  "image",
  "qppocr-core",
+ "qppocr-gpu",
 ]
 
 [[package]]
@@ -3372,6 +3383,17 @@ version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06fcba73f1b8950a923497412621b03b36492ba66ae10b36a0622c06cabc35df"
 dependencies = [
+ "qppocr-kernels",
+]
+
+[[package]]
+name = "qppocr-gpu"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e6e92e8502bce07d8ad13ef6bf012a0d1e3f3834eae7452eedfee38f9f84418"
+dependencies = [
+ "ash",
+ "qppocr-core",
  "qppocr-kernels",
 ]
 

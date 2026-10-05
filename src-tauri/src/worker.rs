@@ -32,6 +32,9 @@ struct WorkerRequest {
     tier: String,
     preset: String,
     threads: usize,
+    /// 计算设备:cpu | gpu(默认 cpu;GPU 各 worker 自建 Vulkan 引擎)
+    #[serde(default)]
+    device: String,
     #[serde(default = "yes")]
     orientation: bool,
     #[serde(default)]
@@ -103,6 +106,7 @@ pub fn run_worker() {
         orientation: req.orientation,
         enhance_contrast: req.enhance_contrast,
         upscale: req.upscale,
+        device: crate::settings::parse_device(&req.device),
     };
     let engine = match build_engine(&spec, req.threads, Path::new(&req.models_dir)) {
         Ok(e) => e,

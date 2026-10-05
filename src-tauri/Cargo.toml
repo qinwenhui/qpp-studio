@@ -21,8 +21,10 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 
-# 引擎：crates.io 发布版
-qppocr = "0.3.1"
+# 引擎：crates.io 发布版(gpu feature = Vulkan 后端;CUDA 的 gpu-cuda 未启用)
+qppocr = { version = "0.3.1", features = ["gpu"] }
+# GPU 枚举(list_devices):门面未 re-export,直接依赖;已在依赖树内零额外成本
+qppocr-gpu = "0.3.1"
 
 # 截图（多屏捕获）
 xcap = "0.9"

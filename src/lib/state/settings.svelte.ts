@@ -9,6 +9,7 @@ const DEFAULTS: Settings = {
   theme: 'macos-glass',
   tier: 'tiny',
   preset: 'speed',
+  device: 'cpu',
   threads: 0,
   hotkey: 'ctrl+shift+o',
   modelsDir: undefined,
@@ -45,6 +46,7 @@ export function syncEngine(e: {
   tier: string;
   preset: string;
   threads: number;
+  device?: string;
   modelsDir: string;
 }) {
   app.engineReady = e.ready;
@@ -52,6 +54,7 @@ export function syncEngine(e: {
   app.engineTier = e.tier;
   app.enginePreset = e.preset;
   app.engineThreads = e.threads;
+  app.engineDevice = e.device ?? 'cpu';
   app.engineModelsDir = e.modelsDir;
 }
 

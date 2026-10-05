@@ -4,7 +4,7 @@ use crate::dto::{
     EngineStatusDto, ImageItemDto, InitInfoDto, ItemOutcomeDto, OcrOutcomeDto, ShotMonitorDto,
 };
 use crate::dto;
-use crate::settings::{parse_preset, parse_tier, Settings};
+use crate::settings::{parse_device, parse_preset, parse_tier, Settings};
 use crate::AppCtx;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,17 +26,27 @@ pub fn engine_status(state: State<AppCtx>) -> EngineStatusDto {
     state.engine.status()
 }
 
-/// 硬件检测信息 + 当前并行策略(按设置里的 tier/workers_override 实时计算)。
+/// 硬件检测信息 + 当前并行策略(按设置里的 tier/device/workers_override 实时计算)。
 #[tauri::command]
 pub fn hw_info(state: State<AppCtx>) -> dto::HwInfoDto {
     let settings = state.settings.read().unwrap();
     let tier = parse_tier(&settings.tier).unwrap_or(qppocr::Tier::Tiny);
-    let p = crate::hw::plan(&state.hw, tier, settings.workers_override);
+    let device = parse_device(&settings.device);
+    let p = crate::hw::plan_for(&state.hw, tier, settings.workers_override, &device);
     dto::HwInfoDto {
         cpu_brand: state.hw.cpu_brand.clone(),
         physical_cores: state.hw.physical_cores as u32,
         logical_cores: state.hw.logical_cores as u32,
         total_mem_gb: (state.hw.total_mem as f64 / 1_073_741_824.0 * 10.0).round() / 10.0,
+        gpus: state
+            .hw
+            .gpus
+            .iter()
+            .map(|g| dto::GpuDto {
+                name: g.name.clone(),
+                api: g.api.clone(),
+            })
+            .collect(),
         plan: dto::PlanDto {
             workers: p.workers,
             threads_each: p.threads_each,
@@ -199,7 +209,8 @@ pub async fn batch_start(
 
     // 大批量 + 档位允许 → 进程分治(每 worker 独立引擎,真正吃满核)
     let workers_override = state.settings.read().unwrap().workers_override;
-    let plan = crate::hw::plan(&state.hw, state.engine.spec().tier, workers_override);
+    let spec = state.engine.spec();
+    let plan = crate::hw::plan_for(&state.hw, spec.tier, workers_override, &spec.device);
     if tasks.len() >= crate::batch::PROC_BATCH_MIN && plan.workers > 0 {
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
@@ -346,6 +357,7 @@ pub async fn settings_set(
     let theme_changed = settings.theme != old.theme;
     let engine_changed = settings.tier != old.tier
         || settings.preset != old.preset
+        || settings.device != old.device
         || settings.orientation != old.orientation
         || settings.enhance_contrast != old.enhance_contrast
         || settings.upscale != old.upscale;
@@ -373,6 +385,7 @@ pub async fn settings_set(
             orientation: settings.orientation,
             enhance_contrast: settings.enhance_contrast,
             upscale: settings.upscale,
+            device: crate::settings::parse_device(&settings.device),
         };
         state.engine.reconfigure(app.clone(), spec);
     }
@@ -1015,6 +1028,72 @@ pub fn pdf_export_merged(
     }
 }
 
+/// 设备实测对比:合成图在 CPU/GPU 各跑 热身1+5轮 取中位(当前档位/线程数)。
+/// GPU 失败时 gpu_error 携带引擎报错(loader 缺失/驱动低于 Vulkan 1.4 等,
+/// 引擎错误串自带设备清单)。
+#[tauri::command]
+pub async fn device_benchmark(app: AppHandle) -> Result<crate::dto::DeviceBenchDto, String> {
+    let (spec, dir, threads) = {
+        let state = app.state::<AppCtx>();
+        (
+            state.engine.spec(),
+            state.engine.models_dir(),
+            state.engine.threads,
+        )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        // 合成测试图:白底三黑杠(与 selftest 同构,结果可复现)
+        let (w, h) = (960u32, 540u32);
+        let mut img = image::RgbImage::from_pixel(w, h, image::Rgb([255u8, 255, 255]));
+        for (y0, hh) in [(80u32, 28u32), (240, 24), (380, 20)] {
+            for y in y0..y0 + hh {
+                for x in 80..880 {
+                    img.put_pixel(x, y, image::Rgb([10, 10, 10]));
+                }
+            }
+        }
+        let image =
+            qppocr::rgb_from_bytes(w, h, img.into_raw()).map_err(|e| e.to_string())?;
+
+        let run_side = |device: qppocr::DeviceChoice| -> Result<(f64, u32), String> {
+            let mut s = spec.clone();
+            s.device = device;
+            let engine = crate::engine::build_engine(&s, threads, &dir)?;
+            let _ = engine.run(&image); // 热身(含 GPU 首见形状的计划构建)
+            let mut times = Vec::new();
+            let mut last = 0u32;
+            for _ in 0..5 {
+                let t0 = std::time::Instant::now();
+                let r = engine.run(&image).map_err(|e| e.to_string())?;
+                times.push(t0.elapsed().as_secs_f64() * 1000.0);
+                last = r.lines.len() as u32;
+            }
+            times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            Ok((times[times.len() / 2], last))
+        };
+
+        let (cpu_ms, cpu_lines) =
+            run_side(qppocr::DeviceChoice::Cpu).map_err(|e| format!("CPU 侧失败:{e}"))?;
+        match run_side(qppocr::DeviceChoice::gpu()) {
+            Ok((gpu_ms, gpu_lines)) => Ok(crate::dto::DeviceBenchDto {
+                cpu_ms,
+                gpu_ms,
+                cpu_lines,
+                gpu_lines,
+                gpu_error: None,
+            }),
+            Err(e) => Ok(crate::dto::DeviceBenchDto {
+                cpu_ms,
+                gpu_ms: 0.0,
+                cpu_lines,
+                gpu_lines: 0,
+                gpu_error: Some(e),
+            }),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 /// PDF 文本直提(跳过 OCR):从文本层提取全部页,毫秒级返回。
 /// 仅对数字原生 PDF 有效(有文本层)。
 #[tauri::command]

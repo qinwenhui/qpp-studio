@@ -75,6 +75,8 @@ export interface EngineStatus {
   tier: string;
   preset: string;
   threads: number;
+  /** 实际计算设备:cpu | gpu */
+  device: string;
   modelsDir: string;
 }
 
@@ -82,6 +84,8 @@ export interface Settings {
   theme: string;
   tier: string;
   preset: string;
+  /** 计算设备:cpu | gpu */
+  device: string;
   threads: number;
   hotkey: string;
   modelsDir?: string;
@@ -108,6 +112,13 @@ export interface ParallelPlan {
   clampedByMem: boolean;
 }
 
+/** 单块 GPU 检测信息 */
+export interface GpuInfo {
+  name: string;
+  /** API 版本串,如 "vulkan 1.4" */
+  api: string;
+}
+
 /** 硬件检测信息(hw_info 命令) */
 export interface HwInfo {
   cpuBrand: string;
@@ -115,7 +126,19 @@ export interface HwInfo {
   logicalCores: number;
   /** 总内存 GB;0 = 探测失败 */
   totalMemGb: number;
+  /** GPU 清单;空 = 无可用 Vulkan 设备 */
+  gpus: GpuInfo[];
   plan: ParallelPlan;
+}
+
+/** 设备实测对比结果(device_benchmark 命令) */
+export interface DeviceBench {
+  cpuMs: number;
+  gpuMs: number;
+  cpuLines: number;
+  gpuLines: number;
+  /** GPU 失败时的引擎报错(非空时 gpuMs/gpuLines 为 0) */
+  gpuError?: string;
 }
 
 /** PDF 页面信息 */

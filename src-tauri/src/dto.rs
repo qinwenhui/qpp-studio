@@ -101,6 +101,8 @@ pub struct EngineStatusDto {
     pub tier: String,
     pub preset: String,
     pub threads: usize,
+    /// 实际计算设备:cpu | gpu(取引擎构建结果的解析)
+    pub device: String,
     pub models_dir: String,
 }
 
@@ -135,7 +137,31 @@ pub struct HwInfoDto {
     pub logical_cores: u32,
     /// 总内存 GB(保留 1 位小数;0 = 探测失败)
     pub total_mem_gb: f64,
+    /// GPU 清单(空 = 无可用 Vulkan 设备)
+    pub gpus: Vec<GpuDto>,
     pub plan: PlanDto,
+}
+
+/// 单块 GPU 的检测信息。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuDto {
+    pub name: String,
+    /// API 版本串,如 "vulkan 1.4"
+    pub api: String,
+}
+
+/// 设备实测对比结果(device_benchmark 命令)。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceBenchDto {
+    pub cpu_ms: f64,
+    pub gpu_ms: f64,
+    /// 两边识别出的行数(一致性参考;small 档可能有极个别行差异)
+    pub cpu_lines: u32,
+    pub gpu_lines: u32,
+    /// GPU 失败时的引擎报错(此字段非空时其余为 0)
+    pub gpu_error: Option<String>,
 }
 
 /// 批量进度事件载荷。

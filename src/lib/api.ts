@@ -2,6 +2,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  DeviceBench,
   EngineStatus,
   HistoryEntry,
   HwInfo,
@@ -32,6 +33,7 @@ export const api = {
   appInit: () => invoke<InitInfo>('app_init'),
   engineStatus: () => invoke<EngineStatus>('engine_status'),
   hwInfo: () => invoke<HwInfo>('hw_info'),
+  deviceBenchmark: () => invoke<DeviceBench>('device_benchmark'),
 
   pickImages: () => invoke<ImageItem[]>('pick_images'),
   addFiles: (paths: string[]) => invoke<ImageItem[]>('add_files', { paths }),

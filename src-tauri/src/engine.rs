@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Emitter, Manager};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct EngineSpec {
     pub tier: qppocr::Tier,
     pub preset: qppocr::Preset,
@@ -22,6 +22,8 @@ pub struct EngineSpec {
     pub upscale: i32,
     /// 特殊预设:精度基底 + unclip_margin_thresh 0.45 / unclip_perp 1.6
     pub special: bool,
+    /// 计算设备(GPU 需引擎 gpu feature + Vulkan 1.4+;不可用时构建报错不回退)
+    pub device: qppocr::DeviceChoice,
 }
 
 pub struct EngineManager {
@@ -44,6 +46,7 @@ impl EngineManager {
                 enhance_contrast: false,
                 upscale: 1,
                 special: false,
+                device: qppocr::DeviceChoice::default(),
             }),
             threads,
             models_dir: RwLock::new(models_dir),
@@ -60,7 +63,7 @@ impl EngineManager {
     pub fn reconfigure(&self, app: AppHandle, spec: EngineSpec) {
         {
             let mut s = self.spec.write().unwrap();
-            *s = spec;
+            *s = spec.clone();
         }
         let dir = self.models_dir.read().unwrap().clone();
         let threads = self.threads;
@@ -87,7 +90,7 @@ impl EngineManager {
     }
 
     pub fn spec(&self) -> EngineSpec {
-        *self.spec.read().unwrap()
+        self.spec.read().unwrap().clone()
     }
 
     pub fn models_dir(&self) -> PathBuf {
@@ -148,12 +151,27 @@ impl EngineManager {
 
     pub fn status(&self) -> EngineStatusDto {
         let s = self.spec.read().unwrap();
+        // 设备取引擎实际解析结果(未就绪时用 spec 意图)
+        let device: String = {
+            let eng = self.engine.read().unwrap();
+            let d = eng
+                .as_ref()
+                .map(|e| e.device().clone())
+                .unwrap_or_else(|| s.device.clone());
+            match d {
+                qppocr::DeviceChoice::Cpu => "cpu".into(),
+                qppocr::DeviceChoice::Gpu { .. } => "gpu".into(),
+                // DeviceChoice 是 non_exhaustive,未来新设备先按 CPU 展示
+                _ => "cpu".into(),
+            }
+        };
         EngineStatusDto {
             ready: self.engine.read().unwrap().is_some(),
             error: self.status_error.read().unwrap().clone(),
             tier: crate::settings::tier_str(s.tier).into(),
             preset: crate::settings::preset_str(s.preset).into(),
             threads: self.threads,
+            device,
             models_dir: self
                 .models_dir
                 .read()
@@ -188,7 +206,7 @@ pub(crate) fn build_engine(
     dir: &std::path::Path,
 ) -> Result<qppocr::Engine, String> {
     let dir = dir.to_path_buf();
-    let spec = *spec;
+    let spec = spec.clone();
     let result = std::panic::catch_unwind(AssertUnwindSafe(move || {
         let enhance = spec.enhance_contrast;
         let upscale = spec.upscale;
@@ -200,6 +218,7 @@ pub(crate) fn build_engine(
             .tier(spec.tier)
             .preset(spec.preset)
             .threads(threads)
+            .device(spec.device.clone())
             .detect_orientation(orientation)
             .advanced(move |a| {
                 a.enhance_contrast = enhance;
@@ -215,7 +234,7 @@ pub(crate) fn build_engine(
     }));
     match result {
         Ok(Ok(engine)) => Ok(engine),
-        Ok(Err(e)) => Err(format!("模型加载失败：{e}")),
+        Ok(Err(e)) => Err(format!("引擎构建失败：{e}")),
         Err(payload) => {
             let msg = payload
                 .downcast_ref::<String>()
