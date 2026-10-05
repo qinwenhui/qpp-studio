@@ -157,6 +157,14 @@ tools/
 批量吞吐由进程分治保证:每 worker 独立引擎实例,按图片像素权重均衡分配;
 worker 数按本机硬件自动决定(内存闸兜底防 OOM)。
 
+## 交流群
+
+使用问题、玩法交流、引擎与应用开发讨论,欢迎加 QQ 群:
+
+<p align="center">
+  <img src="docs/qq-group.jpg" width="220" alt="QQ 交流群二维码" />
+</p>
+
 ## 贡献
 
 欢迎 Issue 与 PR。提交前请跑 `npm run check` 与 `cargo check`。
