@@ -180,8 +180,12 @@
           {/if}
         </p>
         <div class="bench-row">
-          <button class="badge-btn" onclick={() => runDeviceBench()} disabled={benching}>
-            {benching ? '实测中…' : '本机实测对比'}
+          <button
+            class="badge-btn"
+            onclick={() => runDeviceBench()}
+            disabled={benching}
+            title="单张延迟实测(合成图,两侧各热身1+5轮取中位);批量吞吐受并行 worker 数影响,大批量场景以实际跑批为准">
+            {benching ? '实测中…' : '单张实测对比'}
           </button>
           {#if bench}
             {#if bench.gpuError}
@@ -189,12 +193,12 @@
                 GPU 不可用:{bench.gpuError.length > 48 ? `${bench.gpuError.slice(0, 48)}…` : bench.gpuError}
               </span>
             {:else if bench.gpuMs < bench.cpuMs}
-              <span class="bench-ok">
-                CPU {bench.cpuMs.toFixed(0)}ms · GPU {bench.gpuMs.toFixed(0)}ms → GPU 快 {(bench.cpuMs / bench.gpuMs).toFixed(1)}×
+              <span class="bench-ok" title="单张热身延迟;批量吞吐还受并行 worker 数影响(GPU 上限低于 CPU,属内存/显存约束)">
+                单张:CPU {bench.cpuMs.toFixed(0)}ms · GPU {bench.gpuMs.toFixed(0)}ms → GPU 快 {(bench.cpuMs / bench.gpuMs).toFixed(1)}×
               </span>
             {:else}
-              <span class="bench-ok">
-                CPU {bench.cpuMs.toFixed(0)}ms · GPU {bench.gpuMs.toFixed(0)}ms → CPU 更快,建议保持 CPU
+              <span class="bench-ok" title="单张热身延迟;批量吞吐还受并行 worker 数影响">
+                单张:CPU {bench.cpuMs.toFixed(0)}ms · GPU {bench.gpuMs.toFixed(0)}ms → CPU 更快,建议保持 CPU
               </span>
             {/if}
           {/if}

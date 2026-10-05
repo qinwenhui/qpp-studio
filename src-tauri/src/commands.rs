@@ -207,11 +207,15 @@ pub async fn batch_start(
         }
     }
 
-    // 大批量 + 档位允许 → 进程分治(每 worker 独立引擎,真正吃满核)
+    // 大批量 + 档位允许 → 进程分治(每 worker 独立引擎,真正吃满核)。
+    // GPU 例外:单引擎进程内并发是最优形态(实测 17.7 张/s > 4 进程 13.0
+    // 张/s——多进程每批重复付引擎构建税 + 核显 UMA 显存争用,GPU 上下文
+    // 内部本就并行),走下方小批量路径(plan.inproc_concurrency=4)
     let workers_override = state.settings.read().unwrap().workers_override;
     let spec = state.engine.spec();
     let plan = crate::hw::plan_for(&state.hw, spec.tier, workers_override, &spec.device);
-    if tasks.len() >= crate::batch::PROC_BATCH_MIN && plan.workers > 0 {
+    let gpu = matches!(spec.device, qppocr::DeviceChoice::Gpu { .. });
+    if !gpu && tasks.len() >= crate::batch::PROC_BATCH_MIN && plan.workers > 0 {
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
             crate::batch::spawn_proc_batch(app, tasks, plan);

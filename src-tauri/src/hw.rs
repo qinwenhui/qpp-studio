@@ -24,10 +24,10 @@ const WORKER_BUDGET_SMALL: u64 = GIB / 2;
 const WORKER_BUDGET_GPU_TINY: u64 = GIB * 3 - GIB / 10;
 const WORKER_BUDGET_GPU_SMALL: u64 = GIB + GIB / 2;
 
-/// GPU 模式 worker 进程上限:GPU 并发 4 进程仍有 2×+ 收益,但每 worker
-/// GB 级内存(核显吃系统内存),且 GPU 内部已并行(prefers_host_parallelism
-/// = false)——封 2 是吞吐/内存的稳妥平衡。
-const GPU_WORKER_CAP: usize = 2;
+/// GPU 模式 worker 进程上限:引擎侧实测 tiny GPU 4 进程仍 2.7× 扩展
+/// (qppocr bench:workers=4 → 20.3 张/s 为各自最佳并发),再往上无数据;
+/// 真正的约束交给内存闸(每 worker GB 级,核显显存即系统内存)。
+const GPU_WORKER_CAP: usize = 4;
 
 /// 给 OS + 应用本体(UI/WebView/主进程引擎)预留的内存。
 fn mem_reserve(total: u64) -> u64 {
@@ -140,7 +140,10 @@ pub fn plan_for(
 /// - override > 0 时优先,但 medium 不解禁、内存闸仍生效(手动也拦不住 OOM)
 fn plan_with(hw: &HwInfo, tier: Tier, workers_override: usize, gpu: bool) -> ParallelPlan {
     let inproc = if gpu {
-        2 // GPU 内部已并行,进程内并发只做解码重叠
+        // GPU 甜点 = 单引擎进程内并发:实测(QPP_BENCH,GPU tiny)并发×4
+        // 17.7 张/s,反超 4 进程舰队的 13.0(多进程每批重复付引擎构建税
+        // + UMA 显存争用;GPU 上下文内部本就并行)
+        4
     } else {
         match tier {
             Tier::Tiny => 4,
@@ -279,14 +282,14 @@ mod tests {
     fn table_gpu() {
         use qppocr::DeviceChoice;
 
-        // GPU 封顶 2:32G 机 tiny → K=2,t=clamp(18/2)=4,inproc=2
+        // GPU 封顶 4:32G 机 tiny → K=4,t=clamp(18/4)=4,inproc=4
         let p = plan_for(&hw(12, 18, 32), Tiny, 0, &DeviceChoice::gpu());
-        assert_eq!((p.workers, p.threads_each, p.inproc_concurrency), (2, 4, 2));
+        assert_eq!((p.workers, p.threads_each, p.inproc_concurrency), (4, 4, 4));
         assert!(!p.clamped_by_mem);
 
-        // 16G 机 GPU tiny:预算 2.9G,闸 (16-4)/2.9=4 → K=2 不压
+        // 16G 机 GPU tiny:预算 2.9G,闸 (16-4)/2.9=4 → K=4 恰好不压
         let p = plan_for(&hw(8, 16, 16), Tiny, 0, &DeviceChoice::gpu());
-        assert_eq!(p.workers, 2);
+        assert_eq!(p.workers, 4);
 
         // 6G 机 GPU tiny:闸 (6-2)/2.9=1 → 压到 1
         let p = plan_for(&hw(8, 8, 6), Tiny, 0, &DeviceChoice::gpu());
