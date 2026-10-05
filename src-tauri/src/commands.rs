@@ -57,17 +57,18 @@ pub fn hw_info(state: State<AppCtx>) -> dto::HwInfoDto {
     }
 }
 
+/// rfd 异步对话框:macOS 上 AppKit 面板必须由主线程创建,rfd 的 AsyncFileDialog
+/// 内部自行分发主线程(sheet 模态挂主窗口);Windows 上则自开线程,双平台通用,
+/// 任何线程都能 await(rfd 的 async future 标了 Send)。
 #[tauri::command]
 pub async fn pick_images(app: AppHandle) -> Result<Vec<ImageItemDto>, String> {
-    let paths = tauri::async_runtime::spawn_blocking(|| {
-        rfd::FileDialog::new()
-            .add_filter("图片和 PDF", &["png", "jpg", "jpeg", "bmp", "pdf"])
-            .add_filter("PDF 文档", &["pdf"])
-            .pick_files()
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .unwrap_or_default();
+    let handles = rfd::AsyncFileDialog::new()
+        .add_filter("图片和 PDF", &["png", "jpg", "jpeg", "bmp", "pdf"])
+        .add_filter("PDF 文档", &["pdf"])
+        .pick_files()
+        .await
+        .unwrap_or_default();
+    let paths: Vec<PathBuf> = handles.iter().map(|h| h.path().to_path_buf()).collect();
     ingest_paths(&app, paths).await
 }
 
@@ -523,17 +524,15 @@ pub async fn export_content(
         "md" => "md",
         _ => "txt",
     };
-    let path = tauri::async_runtime::spawn_blocking(move || {
-        rfd::FileDialog::new()
-            .add_filter("文件", &[ext])
-            .set_file_name(&default_name)
-            .save_file()
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    let Some(path) = path else {
+    let Some(handle) = rfd::AsyncFileDialog::new()
+        .add_filter("文件", &[ext])
+        .set_file_name(&default_name)
+        .save_file()
+        .await
+    else {
         return Err("已取消".into());
     };
+    let path = handle.path().to_path_buf();
     std::fs::write(&path, content).map_err(|e| format!("写入失败: {e}"))?;
     Ok(path.to_string_lossy().into_owned())
 }

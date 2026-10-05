@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 截图权限用途文案(macOS 10.15+):截图 OCR 用;缺了这项捕获 API 只回黑帧,
+         且首次调用时系统弹窗没有应用说明 -->
+    <key>NSScreenCaptureDescription</key>
+    <string>QPP Studio 需要捕获屏幕内容以进行截图 OCR 识别。</string>
+</dict>
+</plist>

@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # mac 移植调试:无本地 mac,feature 分支上手动触发验证
+  workflow_dispatch:
 
 jobs:
   check-frontend:
@@ -38,3 +40,29 @@ jobs:
       - name: cargo check
         working-directory: src-tauri
         run: cargo check
+
+  # macOS(Apple Silicon)移植:纯编译验证,不需要模型/前端产物。
+  # gpu feature 在 mac 上编译通过、运行时无 Vulkan loader 自然降级为空列表。
+  check-rust-macos:
+    name: Rust 检查(macOS arm64 目标)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy
+
+      - name: cargo test(hw 并行策略表单测)
+        working-directory: src-tauri
+        run: cargo test
