@@ -208,14 +208,14 @@ pub async fn batch_start(
     }
 
     // 大批量 + 档位允许 → 进程分治(每 worker 独立引擎,真正吃满核)。
-    // GPU 例外:单引擎进程内并发是最优形态(实测 17.7 张/s > 4 进程 13.0
-    // 张/s——多进程每批重复付引擎构建税 + 核显 UMA 显存争用,GPU 上下文
-    // 内部本就并行),走下方小批量路径(plan.inproc_concurrency=4)
+    // GPU 同样走舰队:实测(QPP_BENCH,GPU tiny,无错口径)4 进程 13.7 张/s
+    // > 进程内并发×2 的 11.1——共享引擎受「同形状流水深度≤2」约束,
+    // 多进程各持引擎反而绕开限流。小批量(<8)仍走下方进程内路径
+    // (GPU inproc=2,同样受流水深度约束)
     let workers_override = state.settings.read().unwrap().workers_override;
     let spec = state.engine.spec();
     let plan = crate::hw::plan_for(&state.hw, spec.tier, workers_override, &spec.device);
-    let gpu = matches!(spec.device, qppocr::DeviceChoice::Gpu { .. });
-    if !gpu && tasks.len() >= crate::batch::PROC_BATCH_MIN && plan.workers > 0 {
+    if tasks.len() >= crate::batch::PROC_BATCH_MIN && plan.workers > 0 {
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
             crate::batch::spawn_proc_batch(app, tasks, plan);

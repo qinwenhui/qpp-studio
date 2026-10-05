@@ -140,10 +140,10 @@ pub fn plan_for(
 /// - override > 0 时优先,但 medium 不解禁、内存闸仍生效(手动也拦不住 OOM)
 fn plan_with(hw: &HwInfo, tier: Tier, workers_override: usize, gpu: bool) -> ParallelPlan {
     let inproc = if gpu {
-        // GPU 甜点 = 单引擎进程内并发:实测(QPP_BENCH,GPU tiny)并发×4
-        // 17.7 张/s,反超 4 进程舰队的 13.0(多进程每批重复付引擎构建税
-        // + UMA 显存争用;GPU 上下文内部本就并行)
-        4
+        // 引擎 Vulkan 会话硬约束:同一引擎实例「同形状」流水深度 ≤2
+        // (primary+shadow 计划槽),第三条并发同形状直接报错——共享引擎
+        // 的进程内并发必须 ≤2
+        2
     } else {
         match tier {
             Tier::Tiny => 4,
@@ -282,9 +282,9 @@ mod tests {
     fn table_gpu() {
         use qppocr::DeviceChoice;
 
-        // GPU 封顶 4:32G 机 tiny → K=4,t=clamp(18/4)=4,inproc=4
+        // GPU 封顶 4:32G 机 tiny → K=4,t=clamp(18/4)=4,inproc=2(引擎流水深度约束)
         let p = plan_for(&hw(12, 18, 32), Tiny, 0, &DeviceChoice::gpu());
-        assert_eq!((p.workers, p.threads_each, p.inproc_concurrency), (4, 4, 4));
+        assert_eq!((p.workers, p.threads_each, p.inproc_concurrency), (4, 4, 2));
         assert!(!p.clamped_by_mem);
 
         // 16G 机 GPU tiny:预算 2.9G,闸 (16-4)/2.9=4 → K=4 恰好不压

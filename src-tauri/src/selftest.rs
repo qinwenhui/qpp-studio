@@ -111,22 +111,37 @@ fn bench(app: AppHandle, dir: &str) {
     }
     let serial = t0.elapsed().as_secs_f64();
 
-    // B) 进程内并发 4(参照)
+    // B) 进程内并发(参照;GPU=2:引擎 Vulkan 会话同形状流水深度≤2,
+    // 并发更高会报「同形状三条在飞」)。统计失败——吞吐数字必须无错才可信。
+    let b_conc: usize = if matches!(spec.device, qppocr::DeviceChoice::Gpu { .. }) {
+        2
+    } else {
+        4
+    };
+    let b_errors = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let eng = std::sync::Arc::new(engine);
     let queue = std::sync::Mutex::new(images.clone());
     let t0 = Instant::now();
     std::thread::scope(|s| {
-        for _ in 0..4 {
+        for _ in 0..b_conc {
             let eng = eng.clone();
             let queue = &queue;
+            let b_errors = b_errors.clone();
             s.spawn(move || loop {
                 let p = { queue.lock().unwrap().pop() };
                 let Some(p) = p else { return };
-                let _ = eng.run_image_file(&p);
+                if let Err(e) = eng.run_image_file(&p) {
+                    b_errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    eprintln!("[bench] 进程内并发失败: {e}");
+                }
             });
         }
     });
     let conc4 = t0.elapsed().as_secs_f64();
+    let b_err = b_errors.load(std::sync::atomic::Ordering::Relaxed);
+    if b_err > 0 {
+        blog!("[bench] ⚠ 进程内并发失败 {b_err} 张(吞吐数字不可信)");
+    }
 
     // C) 进程分治(当前产品配置:硬件优化表)
     let k = plan.workers.max(1);
@@ -188,8 +203,9 @@ fn bench(app: AppHandle, dir: &str) {
         n as f64 / serial
     );
     blog!(
-        "[bench] 进程内×4       {conc4:>6.2}s  {:.1} 张/s",
-        n as f64 / conc4
+        "[bench] 进程内×{b_conc}       {conc4:>6.2}s  {:.1} 张/s{}",
+        n as f64 / conc4,
+        if b_err > 0 { format!("  ⚠ 失败{b_err}张,数字不可信") } else { String::new() }
     );
     blog!(
         "[bench] 进程×{k}(t={t_each})  {procs:>6.2}s  {:.1} 张/s  (最优 {:.2}s)",
