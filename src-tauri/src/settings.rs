@@ -11,6 +11,9 @@ pub struct Settings {
     pub theme: String,
     /// tiny | small | medium
     pub tier: String,
+    /// 计算设备:cpu | gpu(GPU 需 Vulkan 1.4+;不默认开——冷启动慢、
+    /// small 档有浮点末位差异、老机驱动玄学,由用户实测后选择)
+    pub device: String,
     /// speed | balanced | accuracy
     pub preset: String,
     /// 0 = 自动（按可用核数）。首次构建引擎时锁定，改动重启后生效
@@ -19,7 +22,11 @@ pub struct Settings {
     pub hotkey: String,
     pub models_dir: Option<String>,
     /// 批量并发上限,0 = 自动(按档位:tiny=4 / 其他=2)。8 张以上自动改走多进程分治,此项不生效
-    pub batch_concurrency: usize,    /// 方向纠正（0/180 分类自动翻正；引擎默认开，略增耗时）
+    pub batch_concurrency: usize,
+    /// worker 进程数手动覆盖,0 = 自动(硬件优化表:CPU 核数 + 内存闸)。
+    /// 仅 tiny/small 生效;手动值仍受内存安全上限约束。对下一批生效
+    pub workers_override: usize,
+    /// 方向纠正（0/180 分类自动翻正；引擎默认开，略增耗时）
     pub orientation: bool,
     /// 增强对比（低对比图片提升识别；引擎 Advanced.enhance_contrast）
     pub enhance_contrast: bool,
@@ -34,11 +41,13 @@ impl Default for Settings {
         Self {
             theme: "macos-glass".into(),
             tier: "tiny".into(),
+            device: "cpu".into(),
             preset: "speed".into(),
             threads: 0,
             hotkey: "ctrl+shift+o".into(),
             models_dir: None,
             batch_concurrency: 0,
+            workers_override: 0,
             orientation: true,
             enhance_contrast: false,
             upscale: 1,
@@ -79,6 +88,15 @@ pub fn parse_tier(s: &str) -> Option<qppocr::Tier> {
         "small" => Some(qppocr::Tier::Small),
         "medium" => Some(qppocr::Tier::Medium),
         _ => None,
+    }
+}
+
+/// 设备字符串 → DeviceChoice("gpu" → Vulkan 自动选择,其余 CPU)。
+pub fn parse_device(s: &str) -> qppocr::DeviceChoice {
+    if s == "gpu" {
+        qppocr::DeviceChoice::gpu()
+    } else {
+        qppocr::DeviceChoice::Cpu
     }
 }
 

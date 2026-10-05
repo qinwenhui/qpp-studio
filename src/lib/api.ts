@@ -2,12 +2,15 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  DeviceBench,
   EngineStatus,
   HistoryEntry,
+  HwInfo,
   ImageItem,
   InitInfo,
   ItemOutcome,
   OcrOutcome,
+  PdfPage,
   Settings,
   ShotMonitor,
 } from './types';
@@ -29,6 +32,8 @@ export function mediaUrl(token: string): string {
 export const api = {
   appInit: () => invoke<InitInfo>('app_init'),
   engineStatus: () => invoke<EngineStatus>('engine_status'),
+  hwInfo: () => invoke<HwInfo>('hw_info'),
+  deviceBenchmark: () => invoke<DeviceBench>('device_benchmark'),
 
   pickImages: () => invoke<ImageItem[]>('pick_images'),
   addFiles: (paths: string[]) => invoke<ImageItem[]>('add_files', { paths }),
@@ -61,9 +66,32 @@ export const api = {
   removeItems: (ids: string[]) => invoke<void>('remove_items', { ids }),
   clearItems: () => invoke<void>('clear_items'),
 
-  exportContent: (content: string, fmt: 'txt' | 'json', defaultName: string) =>
-    invoke<string>('export_content', { content, fmt, defaultName }),
+  exportContent: (
+    content: string,
+    fmt: 'txt' | 'json' | 'md',
+    defaultName: string,
+  ) => invoke<string>('export_content', { content, fmt, defaultName }),
   copyText: (text: string) => invoke<void>('copy_text', { text }),
   revealPath: (path: string) => invoke<void>('reveal_path', { path }),
   openUrl: (url: string) => invoke<void>('open_url', { url }),
+
+  pdfPageInfo: (id: string) =>
+    invoke<[number, number, number, number] | null>('pdf_page_info', { id }),
+  pdfPause: (id: string) => invoke<number | null>('pdf_pause', { id }),
+  pdfResume: (id: string) => invoke<boolean>('pdf_resume', { id }),
+  pdfRecognizePage: (id: string, page: number) =>
+    invoke<void>('pdf_recognize_page', { id, page }),
+  pdfPageOutcome: (id: string, page: number) =>
+    invoke<OcrOutcome | null>('pdf_page_outcome', { id, page }),
+  pdfSetMode: (id: string, extract: boolean) =>
+    invoke<boolean>('pdf_set_mode', { id, extract }),
+  pdfOcrPage: (id: string, page: number) => invoke<void>('pdf_ocr_page', { id, page }),
+  pdfRenderPage: (id: string, page: number, dpi?: number) =>
+    invoke<PdfPage>('pdf_render_page', { id, page, dpi }),
+  pdfOcrRange: (id: string, startPage: number, endPage: number) =>
+    invoke<void>('pdf_ocr_range', { id, startPage, endPage }),
+  pdfExtractAll: (id: string) =>
+    invoke<unknown[]>('pdf_extract_all', { id }),
+  pdfExportMerged: (id: string, fmt: 'txt' | 'json' | 'md') =>
+    invoke<string>('pdf_export_merged', { parentId: id, fmt }),
 };

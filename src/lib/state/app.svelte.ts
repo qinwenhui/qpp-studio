@@ -18,6 +18,7 @@ export const app = $state({
   engineTier: 'tiny',
   enginePreset: 'balanced',
   engineThreads: 0,
+  engineDevice: 'cpu',
   engineModelsDir: '',
   version: '',
   platform: 'windows',

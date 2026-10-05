@@ -44,26 +44,77 @@
       .join('\n');
   }
 
-  async function exportAs(fmt: 'txt' | 'json') {
+  /** 版式感知 Markdown:行高聚类判标题,行距突变分段落(与后端 merged md 同规则) */
+  function toMarkdown(): string {
+    const metrics = lines.map((l) => {
+      const ys = l.pts.map((p) => p[1]);
+      const h = Math.max(1, Math.max(...ys) - Math.min(...ys));
+      return { h, cy: (Math.max(...ys) + Math.min(...ys)) / 2 };
+    });
+    const sorted = metrics.map((m) => m.h).sort((a, b) => a - b);
+    const med = sorted[sorted.length >> 1] ?? 1;
+    let out = '';
+    let prev: { cy: number; h: number } | null = null;
+    lines.forEach((l, i) => {
+      const text = l.text.trim();
+      if (!text) return;
+      const { h, cy } = metrics[i];
+      if (prev && cy - prev.cy > prev.h * 1.8) out += '\n';
+      const level = h >= med * 1.5 ? 1 : h >= med * 1.2 ? 2 : 0;
+      out += (level ? '#'.repeat(level) + ' ' : '') + text + '\n';
+      prev = { cy, h };
+    });
+    return out;
+  }
+
+  async function exportAs(fmt: 'txt' | 'json' | 'md') {
     if (!active?.outcome?.ok) return;
     const base = active.item.name.replace(/\.[^.]+$/, '');
     const content =
       fmt === 'txt'
         ? allText()
-        : JSON.stringify(
-            {
-              image: { name: active.item.name, width: active.item.w, height: active.item.h },
-              timings: active.outcome.result?.timings,
-              lines: lines.map((l) => ({ text: l.text, confidence: l.confidence, box: l.pts })),
-            },
-            null,
-            2,
-          );
+        : fmt === 'md'
+          ? toMarkdown()
+          : JSON.stringify(
+              {
+                image: { name: active.item.name, width: active.item.w, height: active.item.h },
+                timings: active.outcome.result?.timings,
+                lines: lines.map((l) => ({ text: l.text, confidence: l.confidence, box: l.pts })),
+              },
+              null,
+              2,
+            );
     try {
       const path = await api.exportContent(content, fmt, `${base}.${fmt}`);
       toast('success', `已导出: ${path}`);
     } catch (e) {
       if (String(e) !== '已取消') toast('error', String(e));
+    }
+  }
+
+  async function exportPdf(fmt: 'txt' | 'json' | 'md') {
+    if (!active || active.item.origin !== 'pdf') return;
+    try {
+      const content = await api.pdfExportMerged(active.item.id, fmt);
+      const base = active.item.name.replace(/\.[^.]+$/, '');
+      const path = await api.exportContent(content, fmt, `${base}-全文.${fmt}`);
+      toast('success', `已导出: ${path}`);
+    } catch (e) {
+      if (String(e) !== '已取消') toast('error', String(e));
+    }
+  }
+
+  /** 本页强制 OCR(直提页上):走后端按需执行线程,结果写回该页,
+   *  翻回本页不再回退成直提结果 */
+  async function reOcrPage() {
+    if (!active || !active.pdfPages) return;
+    const page = active.pdfPages.current;
+    active.phase = 'running';
+    active.outcome = undefined;
+    try {
+      await api.pdfOcrPage(active.item.id, page);
+    } catch (e) {
+      toast('error', String(e));
     }
   }
 
@@ -78,6 +129,17 @@
     <div class="title-row">
       <ModeSwitch />
       <span class="title" title={active?.item.name}>{active?.item.name ?? '识别结果'}</span>
+      {#if active?.outcome?.result?.extracted}
+        <span class="src-badge extract" title="结果来自 PDF 文本层直提(毫秒级,无框线)">直提</span>
+        {#if active.item.origin === 'pdf'}
+          <button
+            class="badge-btn"
+            onclick={() => reOcrPage()}
+            title="这一页改用 OCR 识别(可得到精确框线,约零点几秒)">本页改用OCR</button>
+        {/if}
+      {:else if lines.length}
+        <span class="src-badge" title="结果来自 OCR 识别">OCR</span>
+      {/if}
       {#if active && (active.phase === 'done' || active.phase === 'error')}
         <button
           class="icon-btn rerun-btn"
@@ -177,10 +239,24 @@
         <Icon name="download" size={14} />
         TXT
       </button>
+      <button class="btn" onclick={() => exportAs('md')} title="版式感知:行高判标题层级、行距分段落">
+        <Icon name="download" size={14} />
+        MD
+      </button>
       <button class="btn" onclick={() => exportAs('json')}>
         <Icon name="download" size={14} />
         JSON
       </button>
+      {#if active?.item.origin === 'pdf'}
+        <button class="btn" onclick={() => exportPdf('txt')} title="按页序合并全部已识别页">
+          <Icon name="layers" size={14} />
+          合并 TXT
+        </button>
+        <button class="btn" onclick={() => exportPdf('md')} title="整册版式感知 Markdown(带页分隔)">
+          <Icon name="layers" size={14} />
+          合并 MD
+        </button>
+      {/if}
       <span class="ms" title="引擎端到端耗时">
         {active?.outcome?.result?.timings?.totalMs?.toFixed(1) ?? '—'} ms
       </span>
@@ -216,6 +292,40 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .src-badge {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 8px;
+    border-radius: 999px;
+    flex: none;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--text-faint) 14%, transparent);
+  }
+  .src-badge.extract {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .badge-btn {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: 999px;
+    flex: none;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    transition: all var(--speed-fast) var(--ease-out);
+    white-space: nowrap;
+  }
+  .badge-btn:hover {
+    background: var(--accent-soft);
   }
   .count {
     margin-left: auto;

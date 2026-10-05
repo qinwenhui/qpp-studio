@@ -1,6 +1,6 @@
 [package]
 name = "qpp-studio"
-version = "0.1.0"
+version = "0.2.0"
 description = "QPP Studio — fast & elegant OCR powered by qppocr"
 authors = ["qinwh"]
 license = "AGPL-3.0-or-later"
@@ -21,8 +21,10 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 
-# 引擎：crates.io 发布版
-qppocr = "0.2.1"
+# 引擎：crates.io 发布版(gpu feature = Vulkan 后端;CUDA 的 gpu-cuda 未启用)
+qppocr = { version = "0.3.1", features = ["gpu"] }
+# GPU 枚举(list_devices):门面未 re-export,直接依赖;已在依赖树内零额外成本
+qppocr-gpu = "0.3.1"
 
 # 截图（多屏捕获）
 xcap = "0.9"
@@ -40,6 +42,11 @@ uuid = { version = "1", features = ["v4"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
 # 批量并发信号量（运行时由 tauri 提供）
 tokio = { version = "1", features = ["sync"] }
+pdfium-render = "0.9"
+lazy_static = "1.5.0"
+# 硬件检测(CPU 物理核/逻辑核/总内存)→ 并行策略优化表;只开 system,
+# 不拉 disks/networks/组件特性
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 
 [profile.release]
 # 引擎内核要性能，不用 "s"/"z"

@@ -29,6 +29,36 @@
   let recording = $state(false);
   let pendingHotkey = $state('');
 
+  // 设备实测对比(约数秒:两侧各建引擎+热身+5 轮)
+  let benching = $state(false);
+  let bench = $state<Awaited<ReturnType<typeof api.deviceBenchmark>> | null>(null);
+
+  async function runDeviceBench() {
+    if (benching) return;
+    benching = true;
+    bench = null;
+    try {
+      bench = await api.deviceBenchmark();
+    } catch (e) {
+      toast('error', String(e));
+    } finally {
+      benching = false;
+    }
+  }
+
+  // 硬件检测信息(并行策略区展示;挂载时拉一次,设置变化时刷新策略)
+  let hw = $state<Awaited<ReturnType<typeof api.hwInfo>> | null>(null);
+  $effect(() => {
+    // 依赖 tier/device/workersOverride:策略按它们实时计算
+    void settings.tier;
+    void settings.device;
+    void settings.workersOverride;
+    api
+      .hwInfo()
+      .then((h) => (hw = h))
+      .catch(() => (hw = null));
+  });
+
   function startRecord() {
     recording = true;
     pendingHotkey = '';
@@ -120,6 +150,59 @@
           {/each}
         </div>
         <p class="note">{PRESET_TIPS[settings.preset] ?? ''}</p>
+      </div>
+
+      <div class="field">
+        <span class="k">计算设备</span>
+        <div class="chips">
+          <button
+            class="chip"
+            class:active={settings.device !== 'gpu'}
+            onclick={() => updateSettings({ device: 'cpu' })}
+          >CPU</button>
+          <button
+            class="chip"
+            class:active={settings.device === 'gpu'}
+            disabled={!hw || hw.gpus.length === 0}
+            onclick={() => updateSettings({ device: 'gpu' })}
+            title={
+              !hw || hw.gpus.length === 0
+                ? '未检测到可用的 Vulkan 1.4+ 设备(装/升级显卡驱动后重启应用)'
+                : hw.gpus.map((g) => `${g.name} (${g.api})`).join(', ')
+            }
+          >GPU{hw && hw.gpus.length > 0 ? '' : '(未检测到)'}</button>
+        </div>
+        <p class="note">
+          {#if settings.device === 'gpu'}
+            GPU 走 Vulkan 1.4+:tiny 档输出与 CPU 完全一致;small 档存在极个别行的浮点末位差异——需要与 CPU 完全一致请切回 CPU。冷启动首图略慢
+          {:else}
+            GPU 不一定比 CPU 快(冷启动慢、老核显可能反超);切换后引擎重建,进行中的识别用旧引擎跑完
+          {/if}
+        </p>
+        <div class="bench-row">
+          <button
+            class="badge-btn"
+            onclick={() => runDeviceBench()}
+            disabled={benching}
+            title="单张延迟实测(合成图,两侧各热身1+5轮取中位);批量吞吐受并行 worker 数影响,大批量场景以实际跑批为准">
+            {benching ? '实测中…' : '单张实测对比'}
+          </button>
+          {#if bench}
+            {#if bench.gpuError}
+              <span class="bench-err" title={bench.gpuError}>
+                GPU 不可用:{bench.gpuError.length > 48 ? `${bench.gpuError.slice(0, 48)}…` : bench.gpuError}
+              </span>
+            {:else if bench.gpuMs < bench.cpuMs}
+              <span class="bench-ok" title="单张热身延迟;批量吞吐还受并行 worker 数影响(GPU 上限低于 CPU,属内存/显存约束)">
+                单张:CPU {bench.cpuMs.toFixed(0)}ms · GPU {bench.gpuMs.toFixed(0)}ms → GPU 快 {(bench.cpuMs / bench.gpuMs).toFixed(1)}×
+              </span>
+            {:else}
+              <span class="bench-ok" title="单张热身延迟;批量吞吐还受并行 worker 数影响">
+                单张:CPU {bench.cpuMs.toFixed(0)}ms · GPU {bench.gpuMs.toFixed(0)}ms → CPU 更快,建议保持 CPU
+              </span>
+            {/if}
+          {/if}
+        </div>
       </div>
 
       <div class="field">
@@ -219,10 +302,42 @@
       </div>
     </AccordionSection>
 
-    <AccordionSection title="批量识别" open={false}>
+    <AccordionSection title="并行与批量" open={false}>
+      {#if hw}
+        <div class="field">
+          <span class="k">本机硬件</span>
+          <p class="note hw-info">
+            {hw.cpuBrand}<br />
+            {hw.physicalCores} 物理核 / {hw.logicalCores} 线程 · {hw.totalMemGb > 0 ? `${hw.totalMemGb} GB 内存` : '内存检测失败'}<br />
+            GPU:{hw.gpus.length ? hw.gpus.map((g) => `${g.name} (${g.api})`).join(', ') : '未检测到 Vulkan 设备'}
+          </p>
+          <p class="note">
+            当前策略:{hw.plan.workers > 0
+              ? `${settings.workersOverride > 0 ? '手动' : '自动'} ${hw.plan.workers} 进程 × ${hw.plan.threadsEach} 线程 · 小批量并发 ${hw.plan.inprocConcurrency}${hw.plan.clampedByMem ? ' · 已被内存上限压低' : ''}`
+              : 'medium 档模型较重,不分治(进程内并发 ' + hw.plan.inprocConcurrency + ')'}
+          </p>
+        </div>
+      {/if}
       <div class="field">
         <span class="k">
-          并发数
+          worker 进程数
+          <em class="v">{settings.workersOverride === 0 ? '自动' : settings.workersOverride}</em>
+        </span>
+        <input
+          class="range"
+          type="range"
+          min="0"
+          max="8"
+          step="1"
+          value={settings.workersOverride}
+          oninput={(e) => (settings.workersOverride = +e.currentTarget.value)}
+          onchange={() => updateSettings({ workersOverride: settings.workersOverride })}
+        />
+        <p class="note">自动 = 启动时检测 CPU/内存按优化表取最优;手动值仍受内存安全上限约束,对下一批生效。8 张以上图片批量与 ≥8 页 PDF 按此数分进程并行</p>
+      </div>
+      <div class="field">
+        <span class="k">
+          小批量并发数
           <em class="v">{settings.batchConcurrency === 0 ? '自动' : settings.batchConcurrency}</em>
         </span>
         <input
@@ -235,7 +350,7 @@
           oninput={(e) => (settings.batchConcurrency = +e.currentTarget.value)}
           onchange={() => updateSettings({ batchConcurrency: settings.batchConcurrency })}
         />
-        <p class="note">自动 = 按档位定并发(tiny 4 / 其他 2)。8 张以上自动改走多进程分治(按档位 4-6 个 worker、按图片大小均衡分配,不受此项影响)。单张识别永远独占引擎,不受影响</p>
+        <p class="note">8 张以下批量的进程内并发(单张识别独占引擎,不受影响)。8 张以上自动改走上面的多进程分治</p>
       </div>
     </AccordionSection>
 
@@ -400,6 +515,52 @@
     font-size: 10.5px;
     color: var(--text-faint);
     line-height: 1.5;
+  }
+  .badge-btn {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 10px;
+    border-radius: 999px;
+    flex: none;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    transition: all var(--speed-fast) var(--ease-out);
+    white-space: nowrap;
+  }
+  .badge-btn:hover:not(:disabled) {
+    background: var(--accent-soft);
+  }
+  .badge-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .bench-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+    flex-wrap: wrap;
+  }
+  .bench-ok {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--success);
+  }
+  .bench-err {
+    font-size: 11px;
+    color: var(--danger);
+  }
+  .chips .chip:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .note.hw-info {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
   }
 
   .switch-row {

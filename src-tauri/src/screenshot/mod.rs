@@ -130,7 +130,7 @@ pub fn finish(app: AppHandle, mon: u32, x: i32, y: i32, w: i32, h: i32) -> Resul
         let state = app.state::<crate::AppCtx>();
         let thumb = crate::batch::ensure_thumb(&app, &item.id, &qimg);
         let outcome = dto::outcome_from(state.engine.run_image(qimg));
-        crate::batch::finalize(&app, &item.id, &outcome, thumb);
+        crate::batch::finalize(&app, &item.id, &outcome, thumb, None);
         let payload = ItemOutcomeDto {
             item: item.clone(),
             outcome: outcome.clone(),

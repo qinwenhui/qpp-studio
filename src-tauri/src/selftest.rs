@@ -25,6 +25,12 @@ macro_rules! blog {
 }
 
 pub fn spawn(app: AppHandle) {
+    // PDF 基准模式:QPP_BENCH_PDF=<pdf路径> npm run tauri dev
+    // 串行 vs 舰队整册计时 + worker 峰值 RSS 采样(校准 hw.rs 内存预算)
+    if let Ok(pdf) = std::env::var("QPP_BENCH_PDF") {
+        std::thread::spawn(move || bench_pdf(app, &pdf));
+        return;
+    }
     // 基准模式:QPP_BENCH=<图片目录> npm run tauri dev
     if let Ok(dir) = std::env::var("QPP_BENCH") {
         std::thread::spawn(move || bench(app, &dir));
@@ -44,6 +50,17 @@ fn bench(app: AppHandle, dir: &str) {
     let spec = state.engine.spec();
     let models_dir = state.engine.models_dir();
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+    let workers_override = state.settings.read().unwrap().workers_override;
+    let plan = crate::hw::plan_for(&state.hw, spec.tier, workers_override, &spec.device);
+    blog!(
+        "[bench] hw: {} · P{}/L{} · {:.1}GB → {}进程×{}线程",
+        state.hw.cpu_brand,
+        state.hw.physical_cores,
+        state.hw.logical_cores,
+        state.hw.total_mem as f64 / 1_073_741_824.0,
+        plan.workers,
+        plan.threads_each
+    );
 
     let mut images: Vec<PathBuf> = std::fs::read_dir(dir)
         .expect("读目录失败")
@@ -94,26 +111,41 @@ fn bench(app: AppHandle, dir: &str) {
     }
     let serial = t0.elapsed().as_secs_f64();
 
-    // B) 进程内并发 4(参照)
+    // B) 进程内并发(参照;GPU=2:引擎 Vulkan 会话同形状流水深度≤2,
+    // 并发更高会报「同形状三条在飞」)。统计失败——吞吐数字必须无错才可信。
+    let b_conc: usize = if matches!(spec.device, qppocr::DeviceChoice::Gpu { .. }) {
+        2
+    } else {
+        4
+    };
+    let b_errors = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let eng = std::sync::Arc::new(engine);
     let queue = std::sync::Mutex::new(images.clone());
     let t0 = Instant::now();
     std::thread::scope(|s| {
-        for _ in 0..4 {
+        for _ in 0..b_conc {
             let eng = eng.clone();
             let queue = &queue;
+            let b_errors = b_errors.clone();
             s.spawn(move || loop {
                 let p = { queue.lock().unwrap().pop() };
                 let Some(p) = p else { return };
-                let _ = eng.run_image_file(&p);
+                if let Err(e) = eng.run_image_file(&p) {
+                    b_errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    eprintln!("[bench] 进程内并发失败: {e}");
+                }
             });
         }
     });
     let conc4 = t0.elapsed().as_secs_f64();
+    let b_err = b_errors.load(std::sync::atomic::Ordering::Relaxed);
+    if b_err > 0 {
+        blog!("[bench] ⚠ 进程内并发失败 {b_err} 张(吞吐数字不可信)");
+    }
 
-    // C) 进程分治(当前产品配置:worker_count/threads_each)
-    let k = crate::batch::worker_count(spec.tier, cores).max(1);
-    let t_each = crate::batch::threads_each(k, cores);
+    // C) 进程分治(当前产品配置:硬件优化表)
+    let k = plan.workers.max(1);
+    let t_each = plan.threads_each.max(1);
     let mut proc_rounds = Vec::new();
     for round in 1..=2 {
         let mut chunks: Vec<Vec<PathBuf>> = vec![Vec::new(); k];
@@ -125,7 +157,7 @@ fn bench(app: AppHandle, dir: &str) {
         std::thread::scope(|s| {
             for chunk in chunks {
                 let models_dir = models_dir2.clone();
-                let spec = spec;
+                let spec = spec.clone();
                 s.spawn(move || {
                     bench_worker_chunk(&models_dir, spec, t_each, chunk);
                 });
@@ -154,7 +186,7 @@ fn bench(app: AppHandle, dir: &str) {
     state.batch.cancel.store(false, std::sync::atomic::Ordering::SeqCst);
     state.batch.running.store(true, std::sync::atomic::Ordering::SeqCst);
     let t1 = Instant::now();
-    crate::batch::spawn_proc_batch(app.clone(), e2e_tasks);
+    crate::batch::spawn_proc_batch(app.clone(), e2e_tasks, plan);
     while state
         .batch
         .running
@@ -171,8 +203,9 @@ fn bench(app: AppHandle, dir: &str) {
         n as f64 / serial
     );
     blog!(
-        "[bench] 进程内×4       {conc4:>6.2}s  {:.1} 张/s",
-        n as f64 / conc4
+        "[bench] 进程内×{b_conc}       {conc4:>6.2}s  {:.1} 张/s{}",
+        n as f64 / conc4,
+        if b_err > 0 { format!("  ⚠ 失败{b_err}张,数字不可信") } else { String::new() }
     );
     blog!(
         "[bench] 进程×{k}(t={t_each})  {procs:>6.2}s  {:.1} 张/s  (最优 {:.2}s)",
@@ -208,6 +241,7 @@ fn bench_worker_chunk(
         "tier": crate::settings::tier_str(spec.tier),
         "preset": crate::settings::preset_str(spec.preset),
         "threads": threads,
+        "device": if matches!(spec.device, qppocr::DeviceChoice::Gpu { .. }) { "gpu" } else { "cpu" },
         "orientation": spec.orientation,
         "enhanceContrast": spec.enhance_contrast,
         "upscale": spec.upscale,
@@ -224,6 +258,187 @@ fn bench_worker_chunk(
         for _ in std::io::BufReader::new(stdout).lines() {}
     }
     let _ = child.wait();
+}
+
+/// 采样本进程之外同名进程(worker)的 RSS:返回 (单进程峰值, 合计峰值)。
+/// 用于校准 hw.rs 的单 worker 内存预算。
+fn spawn_rss_sampler(stop: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> (
+    std::sync::Arc<std::sync::atomic::AtomicU64>,
+    std::sync::Arc<std::sync::atomic::AtomicU64>,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let peak_one = std::sync::Arc::new(AtomicU64::new(0));
+    let peak_sum = std::sync::Arc::new(AtomicU64::new(0));
+    let (one, sum) = (peak_one.clone(), peak_sum.clone());
+    let stop = stop.clone();
+    std::thread::spawn(move || {
+        let self_pid = std::process::id();
+        let mut sys = sysinfo::System::new();
+        while !stop.load(Ordering::Relaxed) {
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            let mut total = 0u64;
+            let mut max = 0u64;
+            for (pid, proc_) in sys.processes() {
+                let name = proc_.name().to_string_lossy().to_lowercase();
+                if name.contains("qpp-studio") && pid.as_u32() != self_pid {
+                    let rss = proc_.memory();
+                    total += rss;
+                    max = max.max(rss);
+                }
+            }
+            sum.fetch_max(total, Ordering::Relaxed);
+            one.fetch_max(max, Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    });
+    (peak_one, peak_sum)
+}
+
+/// PDF 整册基准:串行(旧产品路径) vs 舰队(新路径),附 worker 峰值 RSS 采样。
+/// 用法:QPP_BENCH_PDF=<pdf路径> npm run tauri dev,输出到 qpp-bench.log。
+fn bench_pdf(app: AppHandle, pdf_path: &str) {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    let _ = std::fs::remove_file(std::env::temp_dir().join("qpp-bench.log"));
+    blog!("[bench-pdf] === QPP Studio PDF 并行基准 ===");
+    let state = app.state::<crate::AppCtx>();
+    let spec = state.engine.spec();
+    let models_dir = state.engine.models_dir();
+    let workers_override = state.settings.read().unwrap().workers_override;
+    let plan = crate::hw::plan_for(&state.hw, spec.tier, workers_override, &spec.device);
+    blog!(
+        "[bench-pdf] hw: {} · P{}/L{} · {:.1}GB → {}进程×{}线程",
+        state.hw.cpu_brand,
+        state.hw.physical_cores,
+        state.hw.logical_cores,
+        state.hw.total_mem as f64 / 1_073_741_824.0,
+        plan.workers,
+        plan.threads_each
+    );
+
+    let path = PathBuf::from(pdf_path);
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) => {
+            blog!("[bench-pdf] FAIL 读 PDF 失败: {e}");
+            std::process::exit(1);
+        }
+    };
+    let sizes = match crate::pdf::page_sizes(&bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            blog!("[bench-pdf] FAIL 解析失败: {e}");
+            std::process::exit(1);
+        }
+    };
+    let pages = sizes.len() as u32;
+    let weights: Vec<u64> = sizes
+        .iter()
+        .map(|&pt| crate::pdf::page_weight(pt, crate::pdf::DPI_OCR))
+        .collect();
+    blog!(
+        "[bench-pdf] {pages} 页 · tier={} · preset={}",
+        crate::settings::tier_str(spec.tier),
+        crate::settings::preset_str(spec.preset)
+    );
+
+    // A) 串行(旧产品路径:主进程单线程逐页 渲染+共享引擎)
+    let engine = match crate::engine::build_engine(&spec, 0, &models_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            blog!("[bench-pdf] FAIL 引擎: {e}");
+            std::process::exit(1);
+        }
+    };
+    let doc = crate::pdf::load_doc(&bytes).expect("load_doc");
+    // 热身 1 页
+    if let Ok((w, h, rgb)) = crate::pdf::render_doc_page(&doc, 0, crate::pdf::DPI_OCR) {
+        if let Ok(img) = qppocr::rgb_from_bytes(w, h, rgb) {
+            let _ = engine.run(&img);
+        }
+    }
+    let t0 = Instant::now();
+    for page in 0..pages {
+        let _ = (|| {
+            let (w, h, rgb) = crate::pdf::render_doc_page(&doc, page, crate::pdf::DPI_OCR)?;
+            let img = qppocr::rgb_from_bytes(w, h, rgb).map_err(|e| e.to_string())?;
+            let _ = engine.run(&img);
+            Ok::<(), String>(())
+        })();
+    }
+    let serial = t0.elapsed().as_secs_f64();
+    blog!("[bench-pdf] 串行: {serial:.2}s");
+
+    // B) 舰队 ×2 取中位 + RSS 采样
+    let mut rounds = Vec::new();
+    let mut peak_one_final = 0u64;
+    let mut peak_sum_final = 0u64;
+    for round in 1..=2 {
+        let id = format!("benchpdf-r{round}");
+        crate::ingest::PDF_STORE.lock().unwrap().insert(id.clone(), path.clone());
+        crate::ingest::PDF_PAGES.lock().unwrap().insert(
+            id.clone(),
+            crate::ingest::PdfMeta {
+                count: pages,
+                on_demand: false,
+                extract: false,
+                weights: weights.clone(),
+            },
+        );
+        crate::ingest::PDF_RESULTS
+            .lock()
+            .unwrap()
+            .insert(id.clone(), BTreeMap::new());
+        let job = crate::ingest::PdfOcrJob {
+            id: id.clone(),
+            name: "bench".into(),
+            src_path: path.clone(),
+            pages: (0..pages).collect(),
+            total: pages,
+            weights: weights.clone(),
+            extract: false,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let (peak_one, peak_sum) = spawn_rss_sampler(&stop);
+        let t0 = Instant::now();
+        crate::ingest::run_pdf_fleet(&app, &job, &plan);
+        let secs = t0.elapsed().as_secs_f64();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let one = peak_one.load(std::sync::atomic::Ordering::Relaxed);
+        let sum = peak_sum.load(std::sync::atomic::Ordering::Relaxed);
+        peak_one_final = peak_one_final.max(one);
+        peak_sum_final = peak_sum_final.max(sum);
+        blog!(
+            "[bench-pdf] 第{round}轮 舰队 {}×{}: {secs:.2}s · worker RSS 单{:.0}MB/合计{:.0}MB",
+            plan.workers,
+            plan.threads_each,
+            one as f64 / 1_048_576.0,
+            sum as f64 / 1_048_576.0
+        );
+        rounds.push(secs);
+        // 清理本伪造条目
+        crate::ingest::PDF_STORE.lock().unwrap().remove(&id);
+        crate::ingest::PDF_PAGES.lock().unwrap().remove(&id);
+        crate::ingest::PDF_RESULTS.lock().unwrap().remove(&id);
+    }
+    rounds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let fleet = rounds[rounds.len() / 2];
+
+    blog!(
+        "[bench-pdf] 串行 {serial:.2}s vs 舰队 {fleet:.2}s → 加速比 {:.2}×",
+        serial / fleet
+    );
+    blog!(
+        "[bench-pdf] worker 峰值RSS: 单进程 {:.0}MB · 合计 {:.0}MB → hw.rs WORKER_BUDGET_{} 建议改为 {:.2} GiB(峰值×1.3)",
+        peak_one_final as f64 / 1_048_576.0,
+        peak_sum_final as f64 / 1_048_576.0,
+        crate::settings::tier_str(spec.tier).to_uppercase(),
+        peak_one_final as f64 * 1.3 / 1_073_741_824.0
+    );
+    blog!("[bench-pdf] === BENCH DONE ===");
+    std::process::exit(0);
 }
 
 fn run(app: AppHandle) {
@@ -317,6 +532,46 @@ fn run(app: AppHandle) {
         println!("[selftest] ocr error: {e}");
     }
 
+    // 4b) GPU 冒烟(检测到 Vulkan 设备时;不判 PASS,仅记录与 CPU 的对照)
+    {
+        let state = app.state::<crate::AppCtx>();
+        if !state.hw.gpus.is_empty() {
+            let gpu_list = state
+                .hw
+                .gpus
+                .iter()
+                .map(|g| format!("{} ({})", g.name, g.api))
+                .collect::<Vec<_>>()
+                .join(", ");
+            blog!("[selftest] GPU 检测: {gpu_list}");
+            let mut spec = state.engine.spec();
+            spec.device = qppocr::DeviceChoice::gpu();
+            let dir = state.engine.models_dir();
+            let built = Instant::now();
+            match crate::engine::build_engine(&spec, state.engine.threads, &dir) {
+                Ok(engine) => {
+                    let _ = engine.run_image_file(&test_path); // 热身(含形状计划构建)
+                    let t1 = Instant::now();
+                    let lines = engine
+                        .run_image_file(&test_path)
+                        .map(|r| r.lines.len())
+                        .unwrap_or(0);
+                    blog!(
+                        "[selftest] GPU 冒烟: 热身后 {:.1}ms · {} 行 (CPU warm {:.1}ms · {} 行; GPU 构建耗时 {:.1}s)",
+                        t1.elapsed().as_secs_f64() * 1000.0,
+                        lines,
+                        warm.0,
+                        warm.1,
+                        built.elapsed().as_secs_f64()
+                    );
+                }
+                Err(e) => {
+                    blog!("[selftest] GPU 冒烟失败: {e}");
+                }
+            }
+        }
+    }
+
     // 5) media:// 协议:开截图覆盖窗(页面会真实请求冻结 BMP),再取消
     let hits_before = state.media.hits();
     crate::screenshot::begin(app.clone());
@@ -367,6 +622,68 @@ fn run(app: AppHandle) {
     let list = state.history.list(0, 5);
     println!("[selftest] history entries: {}", list.len());
     state.history.flush_if_dirty();
+
+    // 7b) PDF 渲染验证(如果测试 PDF 存在)
+    let test_pdf = std::path::Path::new("D:/qinwh/idea-2026.2.1.win/help/ReferenceCard.pdf");
+    if test_pdf.exists() {
+        blog!("[selftest] PDF 测试: {}", test_pdf.display());
+        match std::fs::read(test_pdf) {
+            Ok(bytes) => {
+                match crate::pdf::page_count(&bytes) {
+                    Ok(n) => blog!("[selftest] PDF 页数: {}", n),
+                    Err(e) => blog!("[selftest] PDF 页数失败: {}", e),
+                }
+                blog!("[selftest] PDF 文本层: {}", crate::pdf::has_text_layer(&bytes));
+                match crate::pdf::render_page(&bytes, 0, crate::pdf::DPI_OCR) {
+                    Ok((w, h, rgb)) => blog!("[selftest] PDF 首页渲染: {}x{} ({}KB)", w, h, rgb.len() / 1024),
+                    Err(e) => blog!("[selftest] PDF 渲染失败: {}", e),
+                }
+            }
+            Err(e) => blog!("[selftest] PDF 读取失败: {}", e),
+        }
+
+        // 7c) PDF 端到端并行识别:真实队列→舰队(QPP_PDF_FLEET_FORCE 强制小册
+        // 也走舰队)→逐页回执→PDF_RESULTS 完备性。
+        // unsafe(set_var):edition 2024 要求;此刻队列线程仅在本任务的
+        // run_pdf_job 里读该变量,设置→移除窗口内无并发读者
+        unsafe { std::env::set_var("QPP_PDF_FLEET_FORCE", "1") };
+        match crate::ingest::ingest_file(&app, test_pdf, "file") {
+            Ok(dto) => {
+                let id = dto.id.clone();
+                let pages = crate::ingest::PDF_PAGES
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .map(|m| m.count)
+                    .unwrap_or(0);
+                let t0 = Instant::now();
+                let mut got = 0usize;
+                while t0.elapsed() < Duration::from_secs(120) {
+                    got = crate::ingest::PDF_RESULTS
+                        .lock()
+                        .unwrap()
+                        .get(&id)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    if pages > 0 && got >= pages as usize {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                blog!(
+                    "[selftest] PDF 并行识别: {}/{} 页 · {:.1}s · 结果完备={}",
+                    got,
+                    pages,
+                    t0.elapsed().as_secs_f64(),
+                    pages > 0 && got >= pages as usize
+                );
+                // 清理,不影响后续人工检查
+                app.state::<crate::AppCtx>().remove_item(&id);
+            }
+            Err(e) => blog!("[selftest] PDF ingest 失败: {e}"),
+        }
+        unsafe { std::env::remove_var("QPP_PDF_FLEET_FORCE") };
+    }
 
     // 8) 留 12s 给外部截屏取证,然后退出
     std::thread::sleep(Duration::from_millis(12000));

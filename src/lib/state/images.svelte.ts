@@ -35,22 +35,61 @@ export async function addItems(list: ImageItem[]) {
     await api.removeItems(oldIds);
   }
   for (const item of list) {
-    imagesStore.items.push({ item, phase: 'new' });
+    // PDF 后端已自动入队识别(page-done 事件驱动进度),phase 直接置 queued,
+    // 不再送图片识别管线——否则第 0 页 PNG 会被 OCR 两次
+    imagesStore.items.push({
+      item,
+      phase: item.origin === 'pdf' ? 'queued' : 'new',
+    });
   }
   setActive(list[0].id);
   if (list.length > 1) {
     // 批量:切到识别记录看进度
     setView('records');
   }
-  const ids = list.map((i) => i.id);
-  await recognize(ids);
+  // PDF 条目:异步探测页数/模式/完成度(直提 0 秒完成时事件可能先于
+  // 条目入 store 被丢,completed 用于拉取式自愈)
+  for (const it of list) {
+    if (it.origin === 'pdf') {
+      void api.pdfPageInfo(it.id).then((info) => {
+        if (info) {
+          const st = imagesStore.items.find((x) => x.item.id === it.id);
+          if (st) {
+            const [count, modeFlag, completed, extractFlag] = info;
+            const onDemand = modeFlag === 1;
+            const finished = count > 0 && completed >= count;
+            st.pdfPages = {
+              count,
+              current: 0,
+              ocrDone: completed,
+              onDemand,
+              extract: extractFlag === 1,
+              ocrState: finished ? 'done' : onDemand ? 'idle' : 'running',
+            };
+            if (finished) {
+              // 结果早就在后端,直接拉当前页自愈(不等事件)
+              void healPageOutcome(it.id, 0);
+            } else if (onDemand) {
+              toast('info', `大文档(${count} 页):按需识别,翻到哪页识别哪页;也可点「识别全部」`);
+              // 初始停在第 0 页,没翻页也要有结果:自动识别当前页
+              st.phase = 'running';
+              void api.pdfRecognizePage(it.id, 0).catch(() => {});
+            }
+          }
+        }
+      });
+    }
+  }
+  const ids = list.filter((i) => i.origin !== 'pdf').map((i) => i.id);
+  if (ids.length) await recognize(ids);
 }
 
-/** 批量结束后自动接续待识别的图片(批次进行中拖入的新图)。 */
+/** 批量结束后自动接续待识别的图片(批次进行中拖入的新图)。
+ *  PDF 条目由后端队列自动识别,不参与接续。 */
 export async function continuePending() {
   if (app.batchRunning) return;
   const pending = imagesStore.items
-    .filter((i) => i.phase === 'new')
+    .filter((i) => i.phase === 'new' && i.item.origin !== 'pdf')
     .map((i) => i.item.id);
   if (pending.length) await recognize(pending);
 }
@@ -107,13 +146,24 @@ async function recognize(ids: string[]) {
   }
 }
 
-/** 事件:单图完成(单张/批量/截图共用)。thumbToken 为识别搭车生成的缩略图令牌。 */
-export function applyOutcome(id: string, outcome: OcrOutcome, thumbToken?: string) {
+/** 事件:单图完成(单张/批量/截图共用)。thumbToken 为识别搭车生成的缩略图令牌。
+ *  pdfPage:PDF 页任务的页号——舰队模式晚到的非当前页结果(如页0)只推进
+ *  phase,不覆盖 outcome,右栏始终与画布当前页一致(翻页同步走 pdf_render_page)。 */
+export function applyOutcome(
+  id: string,
+  outcome: OcrOutcome,
+  thumbToken?: string,
+  pdfPage?: number,
+) {
   const st = imagesStore.items.find((i) => i.item.id === id);
   if (st) {
     st.phase = outcome.ok ? 'done' : 'error';
-    st.outcome = outcome;
-    if (thumbToken) st.item.thumbToken = thumbToken;
+    const stale =
+      pdfPage != null && st.pdfPages != null && pdfPage !== st.pdfPages.current;
+    if (!stale) {
+      st.outcome = outcome;
+      if (thumbToken) st.item.thumbToken = thumbToken;
+    }
   }
 }
 
@@ -189,4 +239,57 @@ export async function reRecognize(id: string) {
 
 export function mediaSrc(item: ImageItem): string {
   return mediaUrl(item.mediaToken);
+}
+
+/** PDF 后台识别每页结果:推进状态机 + 更新当前显示页的 outcome。 */
+export function applyPdfPageDone(p: {
+  id: string;
+  page: number;
+  outcome: OcrOutcome;
+  done: number;
+  total: number;
+}) {
+  const st = imagesStore.items.find((i) => i.item.id === p.id);
+  if (!st) return;
+  // 进度始终记录(导航条显示 X/N),条目切走再切回来也不丢
+  if (st.pdfPages) {
+    st.pdfPages.ocrDone = p.done;
+    // 全部页有结果即完成——无论结果来自整册跑还是暂停后逐页补认;
+    // 其余情况保持当前状态(idle 单页认不出进度条,paused 仍显示已暂停 X/N)
+    if (p.done >= p.total) {
+      st.pdfPages.ocrState = 'done';
+    }
+  }
+  // 只有当前显示页才更新条目 outcome
+  if (st.pdfPages && st.pdfPages.current === p.page) {
+    st.outcome = p.outcome;
+    st.phase = p.outcome.ok ? 'done' : 'error';
+  }
+}
+
+/** 拉取式自愈:从后端直接取某页结果落到条目(事件早于条目入 store 被丢、
+ *  或整册完成但当前页 outcome 缺失的竞态兜底)。 */
+export function healPageOutcome(id: string, page: number) {
+  return api
+    .pdfPageOutcome(id, page)
+    .then((o) => {
+      if (!o) return;
+      const st = imagesStore.items.find((i) => i.item.id === id);
+      if (!st || !st.pdfPages || st.pdfPages.current !== page) return;
+      st.outcome = o;
+      st.phase = o.ok ? 'done' : 'error';
+    })
+    .catch(() => {});
+}
+
+/** PDF 一轮识别结束:completed<total = 被暂停(缺失页由「继续」补跑)。 */
+export function applyPdfOcrDone(p: { id: string; completed: number; total: number }) {
+  const st = imagesStore.items.find((i) => i.item.id === p.id);
+  if (!st?.pdfPages) return;
+  st.pdfPages.ocrDone = p.completed;
+  st.pdfPages.ocrState = p.completed >= p.total ? 'done' : 'paused';
+  // 完成但当前页 outcome 缺失(事件竞态):拉取自愈
+  if (p.completed >= p.total && !st.outcome) {
+    void healPageOutcome(p.id, st.pdfPages.current);
+  }
 }

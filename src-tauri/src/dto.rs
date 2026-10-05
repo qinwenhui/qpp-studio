@@ -57,6 +57,9 @@ pub struct OcrResultDto {
     pub num_flipped: u32,
     pub num_unread: u32,
     pub timings: TimingsDto,
+    /// 文本层直提(非 OCR):行框是全宽近似,画布不显示框线;UI 标注来源
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub extracted: bool,
 }
 
 /// 命令/事件的统一载荷：成功带 result，失败带 error。
@@ -84,6 +87,9 @@ pub struct ImageItemDto {
     /// media:// 协议的访问令牌
     pub media_token: String,
     pub thumb_token: String,
+    /// PDF 有文本层时可直提(跳过 OCR)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub can_extract: bool,
 }
 
 /// 引擎状态。
@@ -95,6 +101,8 @@ pub struct EngineStatusDto {
     pub tier: String,
     pub preset: String,
     pub threads: usize,
+    /// 实际计算设备:cpu | gpu(取引擎构建结果的解析)
+    pub device: String,
     pub models_dir: String,
 }
 
@@ -106,6 +114,54 @@ pub struct InitInfoDto {
     pub engine: EngineStatusDto,
     pub version: String,
     pub platform: String,
+}
+
+/// hw_info 返回的并行策略(按当前 tier + workers_override 实时计算)。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanDto {
+    pub workers: usize,
+    pub threads_each: usize,
+    pub inproc_concurrency: usize,
+    /// 内存闸允许的最大 worker 数(u32::MAX = 内存未知不设限)
+    pub mem_cap: u32,
+    pub clamped_by_mem: bool,
+}
+
+/// hw_info 返回的硬件检测信息。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct HwInfoDto {
+    pub cpu_brand: String,
+    pub physical_cores: u32,
+    pub logical_cores: u32,
+    /// 总内存 GB(保留 1 位小数;0 = 探测失败)
+    pub total_mem_gb: f64,
+    /// GPU 清单(空 = 无可用 Vulkan 设备)
+    pub gpus: Vec<GpuDto>,
+    pub plan: PlanDto,
+}
+
+/// 单块 GPU 的检测信息。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuDto {
+    pub name: String,
+    /// API 版本串,如 "vulkan 1.4"
+    pub api: String,
+}
+
+/// 设备实测对比结果(device_benchmark 命令)。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceBenchDto {
+    pub cpu_ms: f64,
+    pub gpu_ms: f64,
+    /// 两边识别出的行数(一致性参考;small 档可能有极个别行差异)
+    pub cpu_lines: u32,
+    pub gpu_lines: u32,
+    /// GPU 失败时的引擎报错(此字段非空时其余为 0)
+    pub gpu_error: Option<String>,
 }
 
 /// 批量进度事件载荷。
@@ -126,6 +182,9 @@ pub struct ItemDoneDto {
     /// 搭识别便车生成的缩略图令牌（无则保持原状）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumb_token: Option<String>,
+    /// PDF 页任务的页号(图片为 None):前端据此丢弃"晚到的非当前页"结果
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pdf_page: Option<u32>,
 }
 
 /// 「图片 + 识别结果」组合：截图完成事件、历史重开、结果弹窗共用。
@@ -240,6 +299,7 @@ pub fn result_dto(r: &qppocr::OcrResult) -> OcrResultDto {
         num_det_retried: r.num_det_retried as u32,
         num_flipped: r.num_flipped as u32,
         num_unread: r.num_unread as u32,
+        extracted: false,
         timings: TimingsDto {
             det_pre_ms: r1(r.timings.det_pre_ms),
             det_infer_ms: r1(r.timings.det_infer_ms),
@@ -270,4 +330,25 @@ pub fn text_preview(outcome: &OcrOutcomeDto, max_chars: usize) -> String {
         }
     }
     s.chars().take(max_chars).collect()
+}
+
+/// PDF 页面渲染结果。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfPageDto {
+    pub media_token: String,
+    pub w: u32,
+    pub h: u32,
+    pub page: u32,
+    /// 该页是否已有识别结果(按需模式前端据此触发单页识别)
+    pub recognized: bool,
+}
+
+/// PDF 文本直提结果(每页)。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfExtractedPageDto {
+    pub page: u32,
+    pub text: String,
+    pub line_count: u32,
 }

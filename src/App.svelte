@@ -11,6 +11,7 @@
   import IconRail from '$lib/components/IconRail.svelte';
   import ToolBar from '$lib/components/ToolBar.svelte';
   import CanvasStage from '$lib/components/Canvas/CanvasStage.svelte';
+  import PdfPageNav from '$lib/components/PdfPageNav.svelte';
   import Drawer from '$lib/components/Drawer.svelte';
   import ThumbStrip from '$lib/components/ThumbStrip.svelte';
   import DropOverlay from '$lib/components/DropOverlay.svelte';
@@ -19,9 +20,17 @@
 
   import { api } from '$lib/api';
   import { app, setView, toast } from '$lib/state/app.svelte';
-  import { addItems, applyOutcome, applyStatus, addItemWithOutcome, continuePending } from '$lib/state/images.svelte';
+  import { addItems, applyOutcome, applyStatus, addItemWithOutcome, continuePending, applyPdfPageDone, applyPdfOcrDone } from '$lib/state/images.svelte';
   import { applySettings, loadSettings, syncEngine, settings } from '$lib/state/settings.svelte';
   import type { Settings, EngineStatus, ImageItem, ItemOutcome, ToastMsg } from '$lib/types';
+
+  /** 耗时格式化:<60s 显示「,耗时 12.3 秒」,否则「,耗时 2 分 5 秒」 */
+  function fmtElapsed(ms?: number): string {
+    if (ms == null) return '';
+    const s = ms / 1000;
+    if (s < 60) return `,耗时 ${s.toFixed(1)} 秒`;
+    return `,耗时 ${Math.floor(s / 60)} 分 ${Math.round(s % 60)} 秒`;
+  }
 
   onMount(() => {
     let cleanup: (() => void) | undefined;
@@ -31,9 +40,13 @@
 
       const unlisteners: Promise<UnlistenFn>[] = [
         listen<EngineStatus>('engine://status', (e) => syncEngine(e.payload)),
-        listen<{ id: string; outcome: ItemOutcome['outcome']; thumbToken?: string }>(
-          'ocr://item-done',
-          (e) => applyOutcome(e.payload.id, e.payload.outcome, e.payload.thumbToken),
+        listen<{
+          id: string;
+          outcome: ItemOutcome['outcome'];
+          thumbToken?: string;
+          pdfPage?: number;
+        }>('ocr://item-done', (e) =>
+          applyOutcome(e.payload.id, e.payload.outcome, e.payload.thumbToken, e.payload.pdfPage),
         ),
         listen<{ id: string; phase: string }>('ocr://item-status', (e) =>
           applyStatus(e.payload.id, e.payload.phase),
@@ -56,6 +69,24 @@
         listen<ImageItem[]>('app://add-items', (e) => {
           addItems(e.payload);
         }),
+        // PDF 后台识别进度
+        listen<import('$lib/types').PdfPageDone>('pdf://page-done', (e) => {
+          applyPdfPageDone(e.payload);
+        }),
+        listen<{
+          id: string;
+          total: number;
+          completed: number;
+          name: string;
+          elapsedMs?: number;
+        }>('pdf://ocr-done', (e) => {
+          applyPdfOcrDone(e.payload);
+          // completed<total 是被暂停:不打扰(用户刚点的暂停)
+          const st = getActiveItem();
+          if (st && st.item.id === e.payload.id && e.payload.completed >= e.payload.total) {
+            toast('success', 'PDF 识别完成' + fmtElapsed(e.payload.elapsedMs));
+          }
+        }),
         // 自测模式:走用户同款 add_files 命令(invoke 返回通道)
         listen<string[]>('app://selftest-open', (e) => {
           api
@@ -76,7 +107,7 @@
             app.dropActive = false;
             clearTimeout(dropWatchdog);
             if (event.payload.type === 'drop') {
-              const imgRe = /\.(png|jpe?g|bmp)$/i;
+              const imgRe = /\.(png|jpe?g|bmp|pdf)$/i;
               const paths = event.payload.paths.filter((p) => imgRe.test(p));
               if (paths.length) {
                 api
@@ -190,6 +221,7 @@
         ></div>
         <RightPane />
       </div>
+      <PdfPageNav />
       <ThumbStrip />
     </section>
   </div>
