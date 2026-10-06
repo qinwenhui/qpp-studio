@@ -171,8 +171,16 @@ fn bootstrap(app: AppHandle) {
 
     let settings = Settings::load(&data_dir.join("settings.json"));
     let models_dir = resolve_models_dir(&app, &settings);
-    let threads = settings.threads;
     let hw_info = hw::detect();
+    // 引擎线程数:用户显式设置优先;Apple Silicon 默认按 P 核数(避免 E 核
+    // 拖慢单图延迟,进程级线程池启动即定型);其余平台 0 = 引擎自动
+    let threads = if settings.threads > 0 {
+        settings.threads
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        hw_info.physical_cores
+    } else {
+        0
+    };
     let ctx = AppCtx {
         dirs: Dirs {
             settings_file: data_dir.join("settings.json"),
@@ -289,6 +297,16 @@ fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
 }
 
 pub fn run() {
+    // Apple Silicon 并行调优(引擎内核按 x86 标定):
+    // - fork 门槛 4e6 在 M 系(小核多、单核快)过高,小算子切不出并行——
+    //   qppocr-kernels 启动时读 QPPOCR_FORK_MACS,这里降为 2e6;
+    //   必须在首次引擎调用前注入(OnceLock 锁定),worker 进程自动继承
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    // edition 2024 的 set_var 是 unsafe;此刻单线程、任何引擎代码未跑,安全
+    unsafe {
+        std::env::set_var("QPPOCR_FORK_MACS", "2000000");
+    }
+
     // 工作线程 panic 默认无输出,静默吞掉故障 —— 开发期打出来
     if cfg!(debug_assertions) {
         std::panic::set_hook(Box::new(|info| {

@@ -211,6 +211,7 @@ pub(crate) fn build_engine(
         let enhance = spec.enhance_contrast;
         let upscale = spec.upscale;
         let special = spec.special;
+        let tier = spec.tier;
         // 特殊(监控)预设:关方向分类——上游 det 的收紧框本就正立,
         // cls 反而会把裁剪转正引入干扰(引擎侧最终方案)
         let orientation = if special { false } else { spec.orientation };
@@ -228,6 +229,17 @@ pub(crate) fn build_engine(
                     // (白字压在栏杆/栅栏上时,垂直扩张会把背景纹理吃进裁剪框)
                     a.unclip_margin_thresh = 0.45;
                     a.unclip_perp = 0.5;
+                }
+                // Apple Silicon:引擎的 rec 自动分片按 x86 档位标定(tiny=12),
+                // M 系 4P+6E 上深切分的 fork/merge 开销盖过收益——tiny 收到 8。
+                // 显式值引擎原样透传;medium 单进程不分治,保持自动。
+                if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+                    a.rec_shards = match tier {
+                        qppocr::Tier::Tiny => 8,
+                        qppocr::Tier::Small => 4,
+                        qppocr::Tier::Medium => a.rec_shards,
+                        _ => a.rec_shards,
+                    };
                 }
             })
             .build(&dir)

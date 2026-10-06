@@ -276,6 +276,11 @@ mod tests {
         // 单核极端:L=1 → max(1, L/2)=1, t=clamp(1/1)=1
         let p = plan(&hw(1, 1, 4), Tiny, 0);
         assert_eq!((p.workers, p.threads_each), (1, 1));
+
+        // Apple M4(4P+6E):K=min(4,8,5)=4,t=clamp(10/4)=2——多进程扇出吃
+        // P 核,E 核留给系统;引擎线程默认 4(P 核)见 bootstrap,不在此表
+        let p = plan(&hw(4, 10, 18), Tiny, 0);
+        assert_eq!((p.workers, p.threads_each), (4, 2));
     }
 
     #[test]
