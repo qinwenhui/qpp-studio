@@ -34,26 +34,43 @@ fn begin_sync(app: AppHandle) {
     let hide_main = maybe_hide_main(&app);
     let state = app.state::<crate::AppCtx>();
     let dir = state.dirs.shots.join(uuid::Uuid::new_v4().simple().to_string());
+
+    // 错误路径也要恢复主窗口:否则截图失败后窗口永久消失,只能重启应用。
+    // 成功路径由 finish/cancel 负责恢复。
+    let cleanup = || {
+        if hide_main {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+            }
+        }
+    };
+
     if let Err(e) = std::fs::create_dir_all(&dir) {
         emit_error(&app, &format!("创建截图临时目录失败: {e}"));
+        cleanup();
         return;
     }
+
     let shots = match capture::capture_all(&app, &dir) {
         Ok(s) => s,
         Err(e) => {
             let _ = std::fs::remove_dir_all(&dir);
             emit_error(&app, &e);
+            cleanup();
             return;
         }
     };
+
     let labels = match overlay::create_windows(&app, &shots) {
         Ok(l) => l,
         Err(e) => {
             let _ = std::fs::remove_dir_all(&dir);
             emit_error(&app, &e);
+            cleanup();
             return;
         }
     };
+
     *state.shot.lock().unwrap() = Some(Session { shots, labels, dir, hide_main });
     let _ = app.emit("shot://began", ());
 }
@@ -165,11 +182,7 @@ fn emit_error(app: &AppHandle, msg: &str) {
 }
 
 /// 按设置隐藏主窗口(shot_hide=true 且窗口当前可见)。
-/// 返回是否真的隐藏了(finish/cancel 负责恢复)。
-/// ⚠ hide() 在 Windows 上是异步投递到主线程的——本函数跑在工作线程,
-/// 必须等「合成器真的把窗口从屏幕上拿掉」再捕获:WGC 的帧管线有 1-2 帧
-/// 延迟,只等 is_visible() 翻转(消息已处理)不够,盲等固定时长在慢机上
-/// 会残留旧画面(实测 Windows 11 + release 构建可复现窗口残影)。
+/// 返回是否已经发出隐藏请求(finish/cancel 负责恢复)。
 fn maybe_hide_main(app: &AppHandle) -> bool {
     let state = app.state::<crate::AppCtx>();
     if !state.settings.read().unwrap().shot_hide {
@@ -181,17 +194,29 @@ fn maybe_hide_main(app: &AppHandle) -> bool {
     if !w.is_visible().unwrap_or(true) {
         return false;
     }
+
     let _ = w.hide();
-    // 1) 轮询等 hide 消息被主线程处理(is_visible 翻转),放宽到 600ms
+    // hide() 是投递到主线程的异步操作,先等 is_visible 真正翻转,
+    // 否则捕获到的冻结帧里还留着窗口画面。
+    let mut hidden = false;
     for _ in 0..30 {
         if !w.is_visible().unwrap_or(false) {
+            hidden = true;
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    // 2) 等合成器追平:DwmFlush 每次调用阻塞到下一次 DWM 合成完成,
-    //    3 帧 ≈ 覆盖 WGC 帧管线的滞后;再补 60ms 兜底
-    wait_compositor();
+    if hidden {
+        // is_visible 翻转只是「窗口已 orderOut」,捕获后端还未必看得到:
+        // macOS 侧 xcap 走 ScreenCaptureKit,帧管线自带滞后,立刻捕获会拿到
+        // 隐藏前的那一帧(冻结图里带出本应用窗口);Windows 侧是 DWM 的 1-2 帧滞后。
+        #[cfg(target_os = "macos")]
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        wait_compositor();
+    }
+
+    // 只要发出过 hide 就按「已隐藏」记账:finish/cancel 会 show() 回来,对本来就
+    // 可见的窗口是无害的;反过来记 false 而实际已隐藏,窗口就永久消失了。
     true
 }
 

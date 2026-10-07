@@ -369,6 +369,30 @@
       </div>
     </AccordionSection>
 
+    <AccordionSection title="截图权限" open={false}>
+      <div class="field">
+        <p class="note">
+          截图需要 macOS 屏幕录制权限才能正常工作。如果截图只显示桌面壁纸，没有其他窗口内容，请：
+        </p>
+        <ol class="note" style="padding-left: 20px; margin-top: 8px; margin-bottom: 12px;">
+          <li>打开系统设置 → 隐私与安全性 → 屏幕录制</li>
+          <li>找到 QPP Studio，确保开关已开启</li>
+          <li>如果列表中没有，请重启应用后重试</li>
+        </ol>
+        {#if app.platform === 'macos'}
+          <button
+            class="badge-btn"
+            onclick={() => api.openUrl('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')}
+            style="margin-top: 8px;"
+          >
+            打开系统权限设置
+          </button>
+        {:else}
+          <p class="note">请确保已授予应用截图权限</p>
+        {/if}
+      </div>
+    </AccordionSection>
+
     <AccordionSection title="关于" open={false}>
       <div class="mascot-wrap">
         <img class="mascot" src={mascotUrl} alt="QPP Studio 看板娘" draggable="false" />

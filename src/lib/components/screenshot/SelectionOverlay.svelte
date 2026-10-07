@@ -13,12 +13,23 @@
   let sel = $state<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
   let started = false;
 
-  onMount(async () => {
-    try {
-      info = await api.shotWindowMonitor(label);
-    } catch (e) {
-      error = String(e);
+  // 覆盖窗口是 Rust 在登记截图会话之前建的,本 webview 的 JS 可能先跑起来,
+  // 此时 shotWindowMonitor 会报「截图会话已结束」。短轮询到会话就绪为止——
+  // 固定延迟是赌时序,慢了就变成用户看到报错、框选失灵。
+  const loadInfo = async () => {
+    for (let i = 0; i < 20; i++) {
+      try {
+        info = await api.shotWindowMonitor(label);
+        return;
+      } catch (e) {
+        error = String(e);
+      }
+      await new Promise((r) => setTimeout(r, 25));
     }
+  };
+
+  onMount(() => {
+    void loadInfo();
   });
 
   const rect = $derived(
