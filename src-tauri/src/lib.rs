@@ -10,6 +10,8 @@ pub mod hw;
 pub mod image_util;
 pub mod hotkey;
 pub mod ingest;
+#[cfg(target_os = "macos")]
+pub mod menu;
 pub mod media;
 pub mod pdf;
 pub mod screenshot;
@@ -79,9 +81,21 @@ impl AppCtx {
     }
 
     pub fn remove_item(&self, id: &str) {
+        // 只有 PDF 父条目才做连带清理(inbox 页缓存 / 兜底 PDF)。
+        // thumbs/<id>.jpg 是历史记录的唯一缩略图来源(历史条目按 id 引用它),
+        // 从「当前识别」移除一张图不能删盘上的文件,否则那条历史只能显示占位图标。
+        let is_pdf = self
+            .items
+            .read()
+            .unwrap()
+            .get(id)
+            .map(|i| i.origin == "pdf")
+            .unwrap_or(false);
         self.items.write().unwrap().remove(id);
         self.order.write().unwrap().retain(|i| i != id);
-        ingest::cleanup_pdf(self, id);
+        if is_pdf {
+            ingest::cleanup_pdf(self, id);
+        }
     }
 
     pub fn clear_items(&self) {
@@ -169,8 +183,16 @@ fn bootstrap(app: AppHandle) {
 
     let settings = Settings::load(&data_dir.join("settings.json"));
     let models_dir = resolve_models_dir(&app, &settings);
-    let threads = settings.threads;
     let hw_info = hw::detect();
+    // 引擎线程数:用户显式设置优先;Apple Silicon 默认按 P 核数(避免 E 核
+    // 拖慢单图延迟,进程级线程池启动即定型);其余平台 0 = 引擎自动
+    let threads = if settings.threads > 0 {
+        settings.threads
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        hw_info.physical_cores
+    } else {
+        0
+    };
     let ctx = AppCtx {
         dirs: Dirs {
             settings_file: data_dir.join("settings.json"),
@@ -258,7 +280,45 @@ fn bootstrap(app: AppHandle) {
     let _ = app.emit("app://ready", ());
 }
 
+/// 主窗口:配置无法按平台分值,统一在 Rust 侧按平台创建。
+/// - Windows/Linux:无边框自绘标题栏(前端 TitleBar 画三圆点)
+/// - macOS:decorations + titleBarStyle Overlay——原生交通灯悬浮,
+///   内容延伸到标题栏下(前端左区让位),窗口 transparent 走 macos-private-api
+fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
+    let builder = tauri::WebviewWindowBuilder::new(
+        app,
+        "main",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("QPP Studio")
+    .inner_size(1280.0, 800.0)
+    .min_inner_size(960.0, 600.0)
+    .center()
+    .transparent(true);
+    // drag-drop 处理器默认启用(与原 tauri.conf.json 的 dragDropEnabled 一致)
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .decorations(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.decorations(false);
+
+    builder.build()?;
+    Ok(())
+}
+
 pub fn run() {
+    // Apple Silicon 并行调优(引擎内核按 x86 标定):
+    // - fork 门槛 4e6 在 M 系(小核多、单核快)过高,小算子切不出并行——
+    //   qppocr-kernels 启动时读 QPPOCR_FORK_MACS,这里降为 2e6;
+    //   必须在首次引擎调用前注入(OnceLock 锁定),worker 进程自动继承
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    // edition 2024 的 set_var 是 unsafe;此刻单线程、任何引擎代码未跑,安全
+    unsafe {
+        std::env::set_var("QPPOCR_FORK_MACS", "2000000");
+    }
+
     // 工作线程 panic 默认无输出,静默吞掉故障 —— 开发期打出来
     if cfg!(debug_assertions) {
         std::panic::set_hook(Box::new(|info| {
@@ -282,6 +342,9 @@ pub fn run() {
             media::handle(ctx, request, responder)
         })
         .setup(move |app| {
+            create_main_window(app)?;
+            #[cfg(target_os = "macos")]
+            menu::setup(app)?;
             let handle = app.handle().clone();
             bootstrap(handle.clone());
             if selftest {
@@ -294,6 +357,7 @@ pub fn run() {
             commands::engine_status,
             commands::hw_info,
             commands::device_benchmark,
+            commands::set_window_title,
             commands::pick_images,
             commands::add_files,
             commands::read_clipboard_image,
@@ -310,6 +374,7 @@ pub fn run() {
             commands::settings_get,
             commands::settings_set,
             commands::history_list,
+            commands::history_thumb,
             commands::history_delete,
             commands::history_clear,
             commands::history_reopen,

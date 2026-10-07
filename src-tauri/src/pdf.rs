@@ -1,12 +1,13 @@
 //! PDF 支持:光栅化 + 页面探测。
 //!
 //! 使用 pdfium-render(封装 Google PDFium,Chrome 同款引擎)。
-//! pdfium.dll 动态加载(exe 同目录/打包 resources);thread_safe feature 是
-//! 全局互斥锁——进程内多线程渲染是串行化的,渲染并行只能靠独立 worker 进程。
+//! pdfium 动态加载;thread_safe feature 是全局互斥锁——进程内多线程渲染是
+//! 串行化的,渲染并行只能靠独立 worker 进程(见 bind_pdfium 的路径解析,
+//! 主进程与 --worker 进程共用同一套 exe 相对路径)。
 //! 每次渲染时从字节流重新打开——PDFium 内部走内存映射,开销可忽略;
 //! 批量渲染用 load_doc + render_doc_page 复用一次解析。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pdfium_render::prelude::*;
 
@@ -16,7 +17,47 @@ pub const DPI_VIEW: u16 = 200;  // 和 OCR 一致,框线不错位
 pub const DPI_OCR: u16 = 200;
 
 lazy_static::lazy_static! {
-    static ref PDFIUM: Pdfium = Pdfium::new(Pdfium::bind_to_system_library().expect("PDFium 库未找到"));
+    static ref PDFIUM: Pdfium =
+        Pdfium::new(bind_pdfium().expect("PDFium 库未找到"));
+}
+
+/// 绑定 pdfium 动态库。
+/// Windows:LoadLibrary 语义天然搜索 exe 目录——dev 时 tauri 会把 bundle
+/// resources 拷到 exe 旁,安装态 NSIS 同样落在 exe 旁,系统加载即可。
+/// macOS:dyld 不搜 exe 目录——.app 里 dylib 在 Contents/Resources/ 而
+/// exe 在 Contents/MacOS/,必须按显式路径绑定。
+fn bind_pdfium() -> Result<Box<dyn PdfiumLibraryBindings>, PdfiumError> {
+    if !cfg!(target_os = "macos") {
+        return Pdfium::bind_to_system_library();
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            // dev:tauri 把 bundle resources 拷到 exe 同级
+            candidates.push(dir.join("libpdfium.dylib"));
+            // .app 安装态:exe 在 Contents/MacOS/,resources 在 Contents/Resources/
+            if let Some(contents) = dir.parent() {
+                candidates.push(contents.join("Resources/libpdfium.dylib"));
+            }
+        }
+    }
+    if cfg!(debug_assertions) {
+        // dev 兜底:仓库里的 models-bundle
+        candidates.push(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models-bundle/libpdfium.dylib"),
+        );
+    }
+    for path in candidates {
+        if !path.is_file() {
+            continue;
+        }
+        match Pdfium::bind_to_library(&path) {
+            Ok(bound) => return Ok(bound),
+            Err(e) => eprintln!("[pdf] 候选路径加载失败 {path:?}: {e}"),
+        }
+    }
+    // 兜底:系统路径里的 pdfium(如 brew 手装)
+    Pdfium::bind_to_system_library()
 }
 
 /// 从字节加载文档(worker 批量渲染复用,避免逐页重复解析)。

@@ -31,6 +31,7 @@ export function mediaUrl(token: string): string {
 
 export const api = {
   appInit: () => invoke<InitInfo>('app_init'),
+  setWindowTitle: (title: string | null) => invoke<void>('set_window_title', { title }),
   engineStatus: () => invoke<EngineStatus>('engine_status'),
   hwInfo: () => invoke<HwInfo>('hw_info'),
   deviceBenchmark: () => invoke<DeviceBench>('device_benchmark'),
@@ -58,6 +59,7 @@ export const api = {
 
   historyList: (offset = 0, limit = 100) =>
     invoke<HistoryEntry[]>('history_list', { offset, limit }),
+  historyThumb: (id: string) => invoke<string | null>('history_thumb', { id }),
   historyDelete: (id: string) => invoke<void>('history_delete', { id }),
   historyClear: () => invoke<void>('history_clear'),
   historyReopen: (id: string) => invoke<ItemOutcome>('history_reopen', { id }),

@@ -19,8 +19,9 @@
   --radius-xl: 20px;
 
   /* ---- 字体 ---- */
-  --font-ui: system-ui, 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI',
-    'PingFang SC', 'Helvetica Neue', sans-serif;
+  /* mac 前置(-apple-system→SF、中文回落 PingFang);Windows 上前两项不存在自然略过 */
+  --font-ui: -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI Variable Text', 'Segoe UI',
+    'Microsoft YaHei UI', 'PingFang SC', 'Helvetica Neue', sans-serif;
   --font-mono: 'Cascadia Code', 'JetBrains Mono', Consolas, 'SF Mono', monospace;
 
   /* ---- 动效 ---- */

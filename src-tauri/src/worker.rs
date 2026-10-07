@@ -177,22 +177,33 @@ fn run_image_tasks(req: &WorkerRequest, engine: &qppocr::Engine) {
             continue; // 协议混用防御
         };
         let (outcome, thumb_ok) = match crate::image_util::decode_file_oriented(Path::new(path)) {
-            Ok(img) => {
+            Ok(d) => {
                 let thumb_ok = req
                     .thumb_dir
                     .as_deref()
                     .map(|dir| {
                         crate::thumb::make_thumb_from_rgb(
-                            img.w as u32,
-                            img.h as u32,
-                            &img.data,
+                            d.img.w as u32,
+                            d.img.h as u32,
+                            &d.img.data,
                             id,
                             Path::new(dir),
                         )
                         .is_ok()
                     })
                     .unwrap_or(false);
-                let out = dto::outcome_from(engine.run(&img));
+                let out = dto::outcome_from(match engine.run(&d.img) {
+                    Ok(mut v) => {
+                        // 超大图降采样过:框坐标回真原图
+                        crate::image_util::DecodedImage::rescale_result(
+                            &mut v,
+                            d.scale_x,
+                            d.scale_y,
+                        );
+                        Ok(v)
+                    }
+                    Err(e) => Err(e),
+                });
                 (out, thumb_ok)
             }
             Err(e) => (dto::outcome_from(Err(e)), false),

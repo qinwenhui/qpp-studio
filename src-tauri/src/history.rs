@@ -174,6 +174,9 @@ pub fn entry_from(
         total_ms,
         text_preview: text_preview(outcome, 200),
         outcome: outcome.clone(),
+        // 令牌是进程内的,重启即失效,不落盘;列表时按 thumbs/<id>.jpg 现注册。
+        // 注意别写成 Some(item.thumb_token):空串会被前端 `{#if e.thumbToken}`
+        // 判为假值,整列缩略图都会退化成占位图标。
         thumb_token: None,
     }
 }

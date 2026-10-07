@@ -1,5 +1,6 @@
 <script lang="ts">
-  /** mac 风自定义标题栏:三圆点 + 标题 + 主题切换 + 引擎状态。整栏为拖拽区。 */
+  /** 标题栏:标题 + 主题切换 + 引擎状态。整栏为拖拽区。
+   *  Windows:自绘 mac 风三圆点;macOS:原生交通灯 overlay,左区让位不画假圆点。 */
   import { getCurrentWindow, type Window } from '@tauri-apps/api/window';
   import Icon from '$lib/components/Icon.svelte';
   import { hasTauri } from '$lib/api';
@@ -8,6 +9,10 @@
   import { THEMES } from '$lib/theme';
 
   const win: Window | null = hasTauri ? getCurrentWindow() : null;
+  const isMac = $derived(app.platform === 'macos');
+  const maxLabel = $derived(app.platform === 'macos' ? '缩放' : '最大化');
+  /** 当前文档名(图片/PDF),mac 上标题栏居中展示;无条目回落品牌文案 */
+  const docName = $derived(app.docName);
   let maximized = $state(false);
 
   const unlisten = win
@@ -39,19 +44,25 @@
   }
 </script>
 
-<header class="titlebar" data-tauri-drag-region ondblclick={() => win?.toggleMaximize()}>
-  <div class="traffic" role="group" aria-label="窗口控制">
-    <button class="dot red" onclick={() => win?.close()} title="关闭"><span>×</span></button>
-    <button class="dot yellow" onclick={() => win?.minimize()} title="最小化"><span>−</span></button>
-    <button class="dot green" onclick={() => win?.toggleMaximize()} title={maximized ? '还原' : '最大化'}>
-      <span>{maximized ? '⤢' : '+'}</span>
-    </button>
-  </div>
+<header class="titlebar" class:mac={isMac} data-tauri-drag-region ondblclick={() => win?.toggleMaximize()}>
+  {#if !isMac}
+    <div class="traffic" role="group" aria-label="窗口控制">
+      <button class="dot red" onclick={() => win?.close()} title="关闭"><span>×</span></button>
+      <button class="dot yellow" onclick={() => win?.minimize()} title="最小化"><span>−</span></button>
+      <button class="dot green" onclick={() => win?.toggleMaximize()} title={maximized ? '还原' : maxLabel}>
+        <span>{maximized ? '⤢' : '+'}</span>
+      </button>
+    </div>
+  {/if}
 
   <div class="title" data-tauri-drag-region>
-    <span class="name">QPP Studio</span>
-    <span class="sep">·</span>
-    <span class="sub">基于 QPPOCR 推理引擎</span>
+    {#if isMac && docName}
+      <span class="name">{docName}</span>
+    {:else}
+      <span class="name">QPP Studio</span>
+      <span class="sep">·</span>
+      <span class="sub">基于 QPPOCR 推理引擎</span>
+    {/if}
   </div>
 
   <div class="right" data-tauri-drag-region>
@@ -87,6 +98,11 @@
     backdrop-filter: blur(var(--backdrop-blur)) saturate(var(--backdrop-saturate));
     border-bottom: 1px solid var(--border-subtle);
     flex: none;
+  }
+
+  /* macOS overlay 标题栏:系统交通灯悬浮在左上,内容让出约 78px */
+  .titlebar.mac {
+    padding-left: 78px;
   }
 
   .traffic {

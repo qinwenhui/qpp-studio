@@ -13,8 +13,10 @@
   } from '$lib/state/history.svelte';
   import { onMount } from 'svelte';
 
+  // 识别完成后的历史刷新统一在 App.svelte 的 ocr://item-done 里做(全局一份,
+  // 面板收起时也生效)。这里只需在每次打开/切到本面板时拉一次最新快照。
   onMount(() => {
-    if (!historyStore.entries.length) void refreshHistory();
+    void refreshHistory();
   });
 
   const total = $derived(imagesStore.items.length);
@@ -105,8 +107,11 @@
         <span class="elapsed" class:running={app.batchRunning}>
           {#if app.batchRunning}
             <Icon name="spinner" size={11} spinning />
+          {:else if total === 1 && imagesStore.items.length === 1 && imagesStore.items[0].outcome?.result?.timings}
+            {fmtSecs(imagesStore.items[0].outcome.result.timings.totalMs / 1000)}
+          {:else}
+            {fmtSecs(wallS)}
           {/if}
-          {fmtSecs(wallS)}
         </span>
         {#if app.batchRunning}
           <button class="link" onclick={cancelBatch}>取消</button>
@@ -211,7 +216,11 @@
           <span class="idx"><Icon name="clock" size={11} /></span>
           <div class="thumb">
             {#if e.thumbToken}
-              <img src={mediaUrl(e.thumbToken)} alt="" draggable="false" />
+              <img
+                src={mediaUrl(e.thumbToken)}
+                alt=""
+                draggable="false"
+              />
             {:else}
               <Icon name="image" size={16} />
             {/if}
@@ -431,6 +440,7 @@
     color: var(--success);
     font-family: var(--font-mono);
     font-weight: 600;
+    margin-left: 6px;
   }
   .status {
     flex: none;

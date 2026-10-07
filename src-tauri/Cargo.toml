@@ -1,6 +1,6 @@
 [package]
 name = "qpp-studio"
-version = "0.2.0"
+version = "0.3.0"
 description = "QPP Studio — fast & elegant OCR powered by qppocr"
 authors = ["qinwh"]
 license = "AGPL-3.0-or-later"
@@ -16,7 +16,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# macos-private-api:macOS 透明窗口(NSWindow 私有方法)——窗口 transparent:true
+# 与截图结果弹窗的 .transparent() 都依赖它;Windows 上该 feature 零副作用。
+# 直发 dmg 不进 App Store,私有 API 风险可接受;阶段2 标题栏 overlay/材质同样依赖
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"

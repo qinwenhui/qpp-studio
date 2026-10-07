@@ -23,6 +23,9 @@ export const app = $state({
   version: '',
   platform: 'windows',
 
+  /** 当前文档名(图片/PDF 文件名):窗口标题 + mac 标题栏居中展示 */
+  docName: '',
+
   /** 拖拽导入 */
   dropActive: false,
 

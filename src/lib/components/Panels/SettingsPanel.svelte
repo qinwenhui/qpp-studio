@@ -64,12 +64,15 @@
     pendingHotkey = '';
   }
 
+  /** 存储统一用 ctrl 表示主修饰键;macOS 录制时 Cmd(metaKey)落成 ctrl,
+   *  注册端(hotkey.rs)按平台把 ctrl 映射为 Cmd 加速键 */
   function comboFromEvent(e: KeyboardEvent): string | null {
+    const isMac = app.platform === 'macos';
     const parts: string[] = [];
-    if (e.ctrlKey) parts.push('ctrl');
+    if (isMac ? e.metaKey : e.ctrlKey) parts.push('ctrl');
     if (e.altKey) parts.push('alt');
     if (e.shiftKey) parts.push('shift');
-    if (e.metaKey) parts.push('meta');
+    if (!isMac && e.metaKey) parts.push('meta');
     let key = e.key.toLowerCase();
     if (['control', 'alt', 'shift', 'meta'].includes(key)) return null; // 单独按修饰键
     if (key === ' ') key = 'space';
@@ -79,6 +82,14 @@
     parts.push(key);
     if (parts.length < 2) return null; // 必须带修饰键,避免吞掉普通按键
     return parts.join('+');
+  }
+
+  /** 显示用:mac 上主修饰键叫 Cmd */
+  function fmtHotkey(s: string): string {
+    return s
+      .split('+')
+      .map((t) => (app.platform === 'macos' && t === 'ctrl' ? 'cmd' : t))
+      .join('+');
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -167,13 +178,17 @@
             onclick={() => updateSettings({ device: 'gpu' })}
             title={
               !hw || hw.gpus.length === 0
-                ? '未检测到可用的 Vulkan 1.4+ 设备(装/升级显卡驱动后重启应用)'
+                ? app.platform === 'macos'
+                  ? '当前平台不支持 GPU 加速(需 Vulkan,macOS 无 Vulkan loader);CPU 走 ARM NEON 已高度优化'
+                  : '未检测到可用的 Vulkan 1.4+ 设备(装/升级显卡驱动后重启应用)'
                 : hw.gpus.map((g) => `${g.name} (${g.api})`).join(', ')
             }
           >GPU{hw && hw.gpus.length > 0 ? '' : '(未检测到)'}</button>
         </div>
         <p class="note">
-          {#if settings.device === 'gpu'}
+          {#if app.platform === 'macos' && (!hw || hw.gpus.length === 0)}
+            GPU 加速需 Vulkan(Windows/Linux);macOS 走 CPU NEON,单张同样毫秒级
+          {:else if settings.device === 'gpu'}
             GPU 走 Vulkan 1.4+:tiny 档输出与 CPU 完全一致;small 档存在极个别行的浮点末位差异——需要与 CPU 完全一致请切回 CPU。冷启动首图略慢
           {:else}
             GPU 不一定比 CPU 快(冷启动慢、老核显可能反超);切换后引擎重建,进行中的识别用旧引擎跑完
@@ -294,11 +309,11 @@
           {#if recording}
             按下新组合键…(Esc 取消)
           {:else}
-            <kbd>{pendingHotkey || settings.hotkey}</kbd>
+            <kbd>{fmtHotkey(pendingHotkey || settings.hotkey)}</kbd>
             <span class="rec-hint">点击修改</span>
           {/if}
         </button>
-        <p class="note">需包含至少一个修饰键(Ctrl/Alt/Shift);保存后全局生效</p>
+        <p class="note">需包含至少一个修饰键({app.platform === 'macos' ? 'Cmd' : 'Ctrl'}/Alt/Shift);保存后全局生效</p>
       </div>
     </AccordionSection>
 
@@ -351,6 +366,30 @@
           onchange={() => updateSettings({ batchConcurrency: settings.batchConcurrency })}
         />
         <p class="note">8 张以下批量的进程内并发(单张识别独占引擎,不受影响)。8 张以上自动改走上面的多进程分治</p>
+      </div>
+    </AccordionSection>
+
+    <AccordionSection title="截图权限" open={false}>
+      <div class="field">
+        <p class="note">
+          截图需要 macOS 屏幕录制权限才能正常工作。如果截图只显示桌面壁纸，没有其他窗口内容，请：
+        </p>
+        <ol class="note" style="padding-left: 20px; margin-top: 8px; margin-bottom: 12px;">
+          <li>打开系统设置 → 隐私与安全性 → 屏幕录制</li>
+          <li>找到 QPP Studio，确保开关已开启</li>
+          <li>如果列表中没有，请重启应用后重试</li>
+        </ol>
+        {#if app.platform === 'macos'}
+          <button
+            class="badge-btn"
+            onclick={() => api.openUrl('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')}
+            style="margin-top: 8px;"
+          >
+            打开系统权限设置
+          </button>
+        {:else}
+          <p class="note">请确保已授予应用截图权限</p>
+        {/if}
       </div>
     </AccordionSection>
 

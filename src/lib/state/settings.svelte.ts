@@ -34,6 +34,8 @@ export async function loadSettings() {
     applySettings(info.settings);
     app.version = info.version;
     app.platform = info.platform;
+    // 平台分支样式钩子(标题栏交通灯让位 / mac 材质下的半透明底色)
+    document.documentElement.dataset.platform = info.platform;
     syncEngine(info.engine);
   } catch (e) {
     toast('error', `初始化失败: ${String(e)}`);

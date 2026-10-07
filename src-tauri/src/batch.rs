@@ -93,14 +93,20 @@ pub fn run_item_blocking(app: &AppHandle, id: &str) -> OcrOutcomeDto {
         },
     );
     let outcome = match crate::image_util::decode_file_oriented(&item.path) {
-        Ok(img) => {
-            let thumb = ensure_thumb(app, id, &img);
+        Ok(d) => {
+            let (sx, sy) = (d.scale_x, d.scale_y);
+            let thumb = ensure_thumb(app, id, &d.img);
             // catch_unwind:引擎内核在特殊形状上可能 panic,转为错误而不是挂死
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                state.engine.run_image(img)
+                state.engine.run_image(d.img)
             }));
             let out = crate::dto::outcome_from(match r {
-                Ok(v) => v,
+                Ok(Ok(mut v)) => {
+                    // 超大图降采样过:框坐标回真原图
+                    crate::image_util::DecodedImage::rescale_result(&mut v, sx, sy);
+                    Ok(v)
+                }
+                Ok(Err(e)) => Err(e),
                 Err(_) => Err(qppocr::Error::Image(
                     "引擎内核 panic(特殊图像形状?),请把图片反馈给开发".into(),
                 )),
@@ -135,19 +141,26 @@ pub fn run_item_rotated_blocking(app: &AppHandle, id: &str, rotation: u32) -> Oc
     );
 
     let (outcome, thumb) = match crate::image_util::decode_file_oriented(&item.path) {
-        Ok(img) => {
-            let thumb = ensure_thumb(app, id, &img);
+        Ok(d) => {
+            let (sx, sy) = (d.scale_x, d.scale_y);
+            let thumb = ensure_thumb(app, id, &d.img);
             let rot = match rotation % 360 {
                 90 | 180 | 270 => rotation % 360,
                 _ => 0,
             };
             let r = if rot == 0 {
-                state.engine.run_image(img)
+                match state.engine.run_image(d.img) {
+                    Ok(mut v) => {
+                        crate::image_util::DecodedImage::rescale_result(&mut v, sx, sy);
+                        Ok(v)
+                    }
+                    Err(e) => Err(e),
+                }
             } else {
-                match state.engine.run_image(rotate_rgb_cw(&img, rot)) {
+                let (iw, ih) = (d.img.w, d.img.h);
+                match state.engine.run_image(rotate_rgb_cw(&d.img, rot)) {
                     Ok(mut r) => {
                         // 框坐标:旋转帧 → 原图帧(逆映射)
-                        let (iw, ih) = (img.w, img.h);
                         for line in r.lines.iter_mut() {
                             for p in line.pts.iter_mut() {
                                 let (dx, dy) = (p[0], p[1]);
@@ -159,6 +172,8 @@ pub fn run_item_rotated_blocking(app: &AppHandle, id: &str, rotation: u32) -> Oc
                                 *p = [x, y];
                             }
                         }
+                        // 再从喂入图回真原图
+                        crate::image_util::DecodedImage::rescale_result(&mut r, sx, sy);
                         Ok(r)
                     }
                     Err(e) => Err(e),

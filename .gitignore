@@ -23,12 +23,15 @@ tools/.qppocr-clone/
 .vscode/
 .idea/
 
+# 系统
+.DS_Store
+
 # 开发过程中的参考/截图(非项目资产)
 c++那边的.png
 qppocr.png
 任务管理器.png
 报错没法复制.png
 问题.png
-好的样式布局页面参考/
 *.jpeg
 c++*.png
+sfz-rx.jpg

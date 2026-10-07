@@ -21,6 +21,17 @@ pub fn app_init(app: AppHandle, state: State<AppCtx>) -> InitInfoDto {
     }
 }
 
+/// 窗口标题显示当前文档名(图片/PDF 文件名),由前端在当前条目变化时调用;
+/// None 恢复默认标题。mac 上标题进 Cmd+Tab/程序坞;Windows 无边框窗口
+/// 标题不可见,但任务栏 tooltip 同样受益。
+#[tauri::command]
+pub fn set_window_title(app: AppHandle, title: Option<String>) {
+    if let Some(w) = app.get_webview_window("main") {
+        let text = title.unwrap_or_else(|| "QPP Studio".into());
+        let _ = w.set_title(&text);
+    }
+}
+
 #[tauri::command]
 pub fn engine_status(state: State<AppCtx>) -> EngineStatusDto {
     state.engine.status()
@@ -57,17 +68,18 @@ pub fn hw_info(state: State<AppCtx>) -> dto::HwInfoDto {
     }
 }
 
+/// rfd 异步对话框:macOS 上 AppKit 面板必须由主线程创建,rfd 的 AsyncFileDialog
+/// 内部自行分发主线程(sheet 模态挂主窗口);Windows 上则自开线程,双平台通用,
+/// 任何线程都能 await(rfd 的 async future 标了 Send)。
 #[tauri::command]
 pub async fn pick_images(app: AppHandle) -> Result<Vec<ImageItemDto>, String> {
-    let paths = tauri::async_runtime::spawn_blocking(|| {
-        rfd::FileDialog::new()
-            .add_filter("图片和 PDF", &["png", "jpg", "jpeg", "bmp", "pdf"])
-            .add_filter("PDF 文档", &["pdf"])
-            .pick_files()
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .unwrap_or_default();
+    let handles = rfd::AsyncFileDialog::new()
+        .add_filter("图片和 PDF", &["png", "jpg", "jpeg", "bmp", "pdf"])
+        .add_filter("PDF 文档", &["pdf"])
+        .pick_files()
+        .await
+        .unwrap_or_default();
+    let paths: Vec<PathBuf> = handles.iter().map(|h| h.path().to_path_buf()).collect();
     ingest_paths(&app, paths).await
 }
 
@@ -248,6 +260,7 @@ pub async fn batch_start(
             .await;
         }));
     }
+    // 等本批全部落地再收尾:否则前端进度条会停在最后一张
     tauri::async_runtime::spawn(async move {
         for h in handles {
             let _ = h.await;
@@ -411,14 +424,46 @@ pub fn history_list(
     limit: usize,
 ) -> Vec<crate::dto::HistoryEntryDto> {
     let mut list = state.history.list(offset, limit);
-    // 缩略图令牌不持久化,列表时按需注册(命中缓存则零成本)
+    // 令牌不持久化,列表时按条目 id 现注册 thumbs/<id>.jpg。
+    // 必须用 e.id 查路径:e.thumb_token 是进程内令牌,落盘后重启即失效。
     for e in &mut list {
         let thumb = state.dirs.thumbs.join(format!("{}.jpg", e.id));
-        if thumb.exists() {
-            e.thumb_token = Some(state.media.register(thumb, "image/jpeg"));
-        }
+        e.thumb_token = if thumb.is_file() {
+            Some(state.media.register(thumb, "image/jpeg"))
+        } else {
+            None // 缺失的由前端按需调 history_thumb 补生成
+        };
     }
     list
+}
+
+/// 历史条目缺缩略图时按需补生成(源文件仍在的前提下),返回新令牌。
+/// 列表接口保持轻量:只有真正缺图的条目才会付解码代价。
+#[tauri::command]
+pub async fn history_thumb(app: AppHandle, id: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppCtx>();
+        let thumb = state.dirs.thumbs.join(format!("{id}.jpg"));
+        if thumb.is_file() {
+            return Ok(Some(state.media.register(thumb, "image/jpeg")));
+        }
+        let entry = state.history.get(&id).ok_or("历史条目不存在")?;
+        let src = PathBuf::from(&entry.path);
+        if !src.is_file() {
+            return Ok(None); // 源已删除,保持占位图标
+        }
+        let img = qppocr::decode_file(&src).map_err(|e| e.to_string())?;
+        crate::thumb::make_thumb_from_rgb(
+            img.w as u32,
+            img.h as u32,
+            &img.data,
+            &id,
+            &state.dirs.thumbs,
+        )?;
+        Ok(Some(state.media.register(thumb, "image/jpeg")))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -523,17 +568,15 @@ pub async fn export_content(
         "md" => "md",
         _ => "txt",
     };
-    let path = tauri::async_runtime::spawn_blocking(move || {
-        rfd::FileDialog::new()
-            .add_filter("文件", &[ext])
-            .set_file_name(&default_name)
-            .save_file()
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    let Some(path) = path else {
+    let Some(handle) = rfd::AsyncFileDialog::new()
+        .add_filter("文件", &[ext])
+        .set_file_name(&default_name)
+        .save_file()
+        .await
+    else {
         return Err("已取消".into());
     };
+    let path = handle.path().to_path_buf();
     std::fs::write(&path, content).map_err(|e| format!("写入失败: {e}"))?;
     Ok(path.to_string_lossy().into_owned())
 }

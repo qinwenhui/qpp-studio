@@ -22,6 +22,7 @@
   import { app, setView, toast } from '$lib/state/app.svelte';
   import { addItems, applyOutcome, applyStatus, addItemWithOutcome, continuePending, applyPdfPageDone, applyPdfOcrDone } from '$lib/state/images.svelte';
   import { applySettings, loadSettings, syncEngine, settings } from '$lib/state/settings.svelte';
+  import { refreshHistory, scheduleHistoryRefresh } from '$lib/state/history.svelte';
   import type { Settings, EngineStatus, ImageItem, ItemOutcome, ToastMsg } from '$lib/types';
 
   /** 耗时格式化:<60s 显示「,耗时 12.3 秒」,否则「,耗时 2 分 5 秒」 */
@@ -39,15 +40,31 @@
       app.booted = true;
 
       const unlisteners: Promise<UnlistenFn>[] = [
+        // mac 原生菜单栏动作(open/paste/shot/settings),与应用内快捷键同款处理
+        listen<string>('app://menu', (e) => {
+          if (e.payload === 'open') {
+            void openFromPicker();
+          } else if (e.payload === 'paste') {
+            void pasteFromClipboard();
+          } else if (e.payload === 'shot') {
+            void api.screenshotBegin().catch((err) => toast('error', String(err)));
+          } else if (e.payload === 'settings') {
+            setView('settings');
+          }
+        }),
         listen<EngineStatus>('engine://status', (e) => syncEngine(e.payload)),
         listen<{
           id: string;
           outcome: ItemOutcome['outcome'];
           thumbToken?: string;
           pdfPage?: number;
-        }>('ocr://item-done', (e) =>
-          applyOutcome(e.payload.id, e.payload.outcome, e.payload.thumbToken, e.payload.pdfPage),
-        ),
+        }>('ocr://item-done', (e) => {
+          applyOutcome(e.payload.id, e.payload.outcome, e.payload.thumbToken, e.payload.pdfPage);
+          // 历史记录在这里统一刷新:后端 finalize() 是先写历史再广播本事件,
+          // 所以此刻列表已包含新条目。挂在面板组件上是不够的——面板收起时
+          // 收不到,重开才看到(这正是「历史列表不实时更新」的原因)。
+          scheduleHistoryRefresh();
+        }),
         listen<{ id: string; phase: string }>('ocr://item-status', (e) =>
           applyStatus(e.payload.id, e.payload.phase),
         ),
@@ -55,6 +72,8 @@
           app.batchRunning = false;
           app.batchEndedAt = Date.now();
           void continuePending();
+          // 批末兜一次终态,确保合并刷新没吞掉最后几条
+          void refreshHistory();
         }),
         listen<ItemOutcome>('shot://finished', (e) => {
           addItemWithOutcome(e.payload.item, e.payload.outcome);
@@ -96,7 +115,14 @@
         }),
         // 批量导入进度
         listen<{ done: number; total: number }>('ingest://progress', (e) => {
-          app.importing = e.payload;
+          if (e.payload.done === e.payload.total) {
+            // 让进度条先走到 100% 再收掉,否则最后几格会「没走到头就消失」
+            setTimeout(() => {
+              app.importing = null;
+            }, 500);
+          } else {
+            app.importing = e.payload;
+          }
         }),
         // 拖拽导入
         getCurrentWebview().onDragDropEvent((event) => {
@@ -173,30 +199,46 @@
     dropWatchdog = setTimeout(() => (app.dropActive = false), 3000);
   }
 
+  /** 打开/粘贴:快捷键与 mac 菜单栏共用 */
+  async function openFromPicker() {
+    try {
+      addItems(await api.pickImages());
+    } catch (err) {
+      toast('error', String(err));
+    }
+  }
+
+  async function pasteFromClipboard() {
+    try {
+      addItems([await api.readClipboardImage()]);
+    } catch {
+      /* 剪贴板没有图片,安静忽略 */
+    }
+  }
+
   async function onKeydown(e: KeyboardEvent) {
     // 输入框内不拦截
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
       e.preventDefault();
-      try {
-        addItems(await api.pickImages());
-      } catch (err) {
-        toast('error', String(err));
-      }
+      void openFromPicker();
     } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
       e.preventDefault();
-      try {
-        addItems([await api.readClipboardImage()]);
-      } catch {
-        /* 剪贴板没有图片,安静忽略 */
-      }
+      void pasteFromClipboard();
     } else if ((e.ctrlKey || e.metaKey) && e.key >= '1' && e.key <= '3') {
       e.preventDefault();
       const views = ['records', 'stats', 'settings'] as const;
       setView(views[+e.key - 1]);
     }
   }
+
+  // 当前文档名 → 窗口标题(mac 进 Cmd+Tab/菜单;Windows 任务栏 tooltip)+ mac 标题栏居中
+  $effect(() => {
+    const name = getActiveItem()?.item.name ?? '';
+    app.docName = name;
+    void api.setWindowTitle(name || null).catch(() => {});
+  });
 </script>
 
 <svelte:window onkeydown={onKeydown} onblur={() => (app.dropActive = false)} />
