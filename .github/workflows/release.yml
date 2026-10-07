@@ -55,13 +55,6 @@ jobs:
           name: qpp-studio-windows
           path: artifact/
 
-      - name: 附到 GitHub Release(仅打 tag 时)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifact/*
-          generate_release_notes: true
-
   # macOS(Apple Silicon):原生 arm64 runner。未签名 dmg(右键打开绕 Gatekeeper),
   # 公证/正式签名留待后续接 APPLE_CERTIFICATE secrets。
   # workflow_dispatch 手动触发用于 mac 移植调试:只出 artifact,不发 Release。
@@ -109,9 +102,24 @@ jobs:
           name: qpp-studio-macos-arm64
           path: artifact/
 
-      - name: 附到 GitHub Release(仅打 tag 时)
-        if: startsWith(github.ref, 'refs/tags/v')
+  # Release 只由这一个 job 写:原先两个 build job 各自带 generate_release_notes,
+  # 同一个 Release 的正文被生成两遍并叠加(v0.3.0 实际就是这样发出去的)。
+  # 收敛成单一写入者后,正文与附件都不再有竞争,也不必依赖 action
+  # 在「更新已有 Release」时的具体行为。
+  # tag 之外(workflow_dispatch 调试)整个 job 跳过,保持「手动触发只出 artifact」。
+  publish:
+    name: 发布 Release
+    needs: [build-windows, build-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取回两个平台的产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: 建 Release 并附上全部产物
         uses: softprops/action-gh-release@v2
         with:
-          files: artifact/*
+          files: dist/**/*
           generate_release_notes: true
