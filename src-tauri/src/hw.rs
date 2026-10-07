@@ -195,7 +195,13 @@ fn plan_with(hw: &HwInfo, tier: Tier, workers_override: usize, gpu: bool) -> Par
         threads_each: if k == 0 {
             0
         } else {
-            (hw.logical_cores / k).clamp(1, 4)
+            // 每个 worker 的分片数 ≈ 核数 ÷ worker 数,上限 4(再多只有调度开销)。
+            // Apple Silicon 按物理核算:逻辑核含 E 核,算进去会拖长单图延迟。
+            if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+                (hw.physical_cores / k).clamp(2, 4)
+            } else {
+                (hw.logical_cores / k).clamp(1, 4)
+            }
         },
         inproc_concurrency: inproc,
         mem_cap,
