@@ -65,7 +65,7 @@ npm run tauri dev        # 开发调试
 npm run tauri build      # 出安装包
 ```
 
-CI 会自动检查每次提交;打 tag(如 `v0.2.0`)即自动构建并发布 Windows 安装包到 Releases。
+CI 会自动检查每次提交;打 tag(如 `v0.3.0`)即自动构建并发布 Windows 安装包到 Releases。
 
 ### 模型文件
 
