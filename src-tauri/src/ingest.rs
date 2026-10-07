@@ -113,7 +113,8 @@ pub fn cleanup_pdf(state: &crate::AppCtx, id: &str) {
         }
     }
     let _ = std::fs::remove_file(state.dirs.inbox.join(format!("{id}.pdf")));
-    let _ = std::fs::remove_file(state.dirs.thumbs.join(format!("{id}.jpg")));
+    // 缩略图刻意保留:历史条目按 id 引用它,而 PDF 缩略图无法像图片那样
+    // 从源文件重新生成(源是 PDF,不是图片)。删了 = 该历史行永久占位图标。
 }
 
 /// 入队一本 PDF 的后台识别。

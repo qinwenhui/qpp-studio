@@ -22,6 +22,7 @@
   import { app, setView, toast } from '$lib/state/app.svelte';
   import { addItems, applyOutcome, applyStatus, addItemWithOutcome, continuePending, applyPdfPageDone, applyPdfOcrDone } from '$lib/state/images.svelte';
   import { applySettings, loadSettings, syncEngine, settings } from '$lib/state/settings.svelte';
+  import { refreshHistory, scheduleHistoryRefresh } from '$lib/state/history.svelte';
   import type { Settings, EngineStatus, ImageItem, ItemOutcome, ToastMsg } from '$lib/types';
 
   /** 耗时格式化:<60s 显示「,耗时 12.3 秒」,否则「,耗时 2 分 5 秒」 */
@@ -57,9 +58,13 @@
           outcome: ItemOutcome['outcome'];
           thumbToken?: string;
           pdfPage?: number;
-        }>('ocr://item-done', (e) =>
-          applyOutcome(e.payload.id, e.payload.outcome, e.payload.thumbToken, e.payload.pdfPage),
-        ),
+        }>('ocr://item-done', (e) => {
+          applyOutcome(e.payload.id, e.payload.outcome, e.payload.thumbToken, e.payload.pdfPage);
+          // 历史记录在这里统一刷新:后端 finalize() 是先写历史再广播本事件,
+          // 所以此刻列表已包含新条目。挂在面板组件上是不够的——面板收起时
+          // 收不到,重开才看到(这正是「历史列表不实时更新」的原因)。
+          scheduleHistoryRefresh();
+        }),
         listen<{ id: string; phase: string }>('ocr://item-status', (e) =>
           applyStatus(e.payload.id, e.payload.phase),
         ),
@@ -67,6 +72,8 @@
           app.batchRunning = false;
           app.batchEndedAt = Date.now();
           void continuePending();
+          // 批末兜一次终态,确保合并刷新没吞掉最后几条
+          void refreshHistory();
         }),
         listen<ItemOutcome>('shot://finished', (e) => {
           addItemWithOutcome(e.payload.item, e.payload.outcome);
@@ -108,7 +115,14 @@
         }),
         // 批量导入进度
         listen<{ done: number; total: number }>('ingest://progress', (e) => {
-          app.importing = e.payload;
+          if (e.payload.done === e.payload.total) {
+            // 让进度条先走到 100% 再收掉,否则最后几格会「没走到头就消失」
+            setTimeout(() => {
+              app.importing = null;
+            }, 500);
+          } else {
+            app.importing = e.payload;
+          }
         }),
         // 拖拽导入
         getCurrentWebview().onDragDropEvent((event) => {

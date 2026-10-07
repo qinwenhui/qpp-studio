@@ -59,6 +59,7 @@ export const api = {
 
   historyList: (offset = 0, limit = 100) =>
     invoke<HistoryEntry[]>('history_list', { offset, limit }),
+  historyThumb: (id: string) => invoke<string | null>('history_thumb', { id }),
   historyDelete: (id: string) => invoke<void>('history_delete', { id }),
   historyClear: () => invoke<void>('history_clear'),
   historyReopen: (id: string) => invoke<ItemOutcome>('history_reopen', { id }),

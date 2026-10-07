@@ -81,9 +81,21 @@ impl AppCtx {
     }
 
     pub fn remove_item(&self, id: &str) {
+        // 只有 PDF 父条目才做连带清理(inbox 页缓存 / 兜底 PDF)。
+        // thumbs/<id>.jpg 是历史记录的唯一缩略图来源(历史条目按 id 引用它),
+        // 从「当前识别」移除一张图不能删盘上的文件,否则那条历史只能显示占位图标。
+        let is_pdf = self
+            .items
+            .read()
+            .unwrap()
+            .get(id)
+            .map(|i| i.origin == "pdf")
+            .unwrap_or(false);
         self.items.write().unwrap().remove(id);
         self.order.write().unwrap().retain(|i| i != id);
-        ingest::cleanup_pdf(self, id);
+        if is_pdf {
+            ingest::cleanup_pdf(self, id);
+        }
     }
 
     pub fn clear_items(&self) {
@@ -362,6 +374,7 @@ pub fn run() {
             commands::settings_get,
             commands::settings_set,
             commands::history_list,
+            commands::history_thumb,
             commands::history_delete,
             commands::history_clear,
             commands::history_reopen,

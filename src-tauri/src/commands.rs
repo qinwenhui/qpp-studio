@@ -260,6 +260,7 @@ pub async fn batch_start(
             .await;
         }));
     }
+    // 等本批全部落地再收尾:否则前端进度条会停在最后一张
     tauri::async_runtime::spawn(async move {
         for h in handles {
             let _ = h.await;
@@ -423,14 +424,46 @@ pub fn history_list(
     limit: usize,
 ) -> Vec<crate::dto::HistoryEntryDto> {
     let mut list = state.history.list(offset, limit);
-    // 缩略图令牌不持久化,列表时按需注册(命中缓存则零成本)
+    // 令牌不持久化,列表时按条目 id 现注册 thumbs/<id>.jpg。
+    // 必须用 e.id 查路径:e.thumb_token 是进程内令牌,落盘后重启即失效。
     for e in &mut list {
         let thumb = state.dirs.thumbs.join(format!("{}.jpg", e.id));
-        if thumb.exists() {
-            e.thumb_token = Some(state.media.register(thumb, "image/jpeg"));
-        }
+        e.thumb_token = if thumb.is_file() {
+            Some(state.media.register(thumb, "image/jpeg"))
+        } else {
+            None // 缺失的由前端按需调 history_thumb 补生成
+        };
     }
     list
+}
+
+/// 历史条目缺缩略图时按需补生成(源文件仍在的前提下),返回新令牌。
+/// 列表接口保持轻量:只有真正缺图的条目才会付解码代价。
+#[tauri::command]
+pub async fn history_thumb(app: AppHandle, id: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppCtx>();
+        let thumb = state.dirs.thumbs.join(format!("{id}.jpg"));
+        if thumb.is_file() {
+            return Ok(Some(state.media.register(thumb, "image/jpeg")));
+        }
+        let entry = state.history.get(&id).ok_or("历史条目不存在")?;
+        let src = PathBuf::from(&entry.path);
+        if !src.is_file() {
+            return Ok(None); // 源已删除,保持占位图标
+        }
+        let img = qppocr::decode_file(&src).map_err(|e| e.to_string())?;
+        crate::thumb::make_thumb_from_rgb(
+            img.w as u32,
+            img.h as u32,
+            &img.data,
+            &id,
+            &state.dirs.thumbs,
+        )?;
+        Ok(Some(state.media.register(thumb, "image/jpeg")))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

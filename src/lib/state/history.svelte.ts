@@ -9,11 +9,64 @@ export const historyStore = $state({
   entries: [] as HistoryEntry[],
 });
 
+let inFlight = false;
+let dirty = false;
+let timer: ReturnType<typeof setTimeout> | undefined;
+
 export async function refreshHistory() {
+  // 上一次还没回来就再拉一遍没意义,标脏等它结束后补一次
+  if (inFlight) {
+    dirty = true;
+    return;
+  }
+  inFlight = true;
   try {
-    historyStore.entries = await api.historyList(0, 100);
+    const entries = await api.historyList(0, 100);
+    historyStore.entries = entries;
+    // 缺缩略图的条目(源文件仍在时)按需补生成,不阻塞列表渲染。
+    // 补不出来的记进 misses,避免每次刷新都对已删源文件重复发起 IPC。
+    for (const e of entries) {
+      if (!e.thumbToken && !thumbMisses.has(e.id)) void fetchThumb(e.id);
+    }
   } catch (e) {
     toast('error', `读取历史失败: ${String(e)}`);
+  } finally {
+    inFlight = false;
+    if (dirty) {
+      dirty = false;
+      void refreshHistory();
+    }
+  }
+}
+
+/**
+ * 合并式刷新:批量识别时 item-done 会连着来上百条,每条都全量拉列表会把
+ * IPC 与渲染打满。这里把一阵突发合并成一次刷新;`batch://done` 再兜一次终态。
+ */
+export function scheduleHistoryRefresh(delay = 250) {
+  if (timer) clearTimeout(timer);
+  timer = setTimeout(() => {
+    timer = undefined;
+    void refreshHistory();
+  }, delay);
+}
+
+/** 补不出缩略图的条目(源文件已不在),不再重复尝试。 */
+const thumbMisses = new Set<string>();
+
+/** 为缺图的历史条目补生成缩略图(后端会落盘,后续列表直接命中)。 */
+async function fetchThumb(id: string) {
+  try {
+    const token = await api.historyThumb(id);
+    if (!token) {
+      thumbMisses.add(id);
+      return;
+    }
+    const hit = historyStore.entries.find((e) => e.id === id);
+    if (hit) hit.thumbToken = token;
+  } catch {
+    /* 源文件已删除等:保持占位图标,不打扰用户 */
+    thumbMisses.add(id);
   }
 }
 
