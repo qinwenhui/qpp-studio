@@ -192,20 +192,30 @@ fn plan_with(hw: &HwInfo, tier: Tier, workers_override: usize, gpu: bool) -> Par
     let k = want.min(mem_cap);
     ParallelPlan {
         workers: k,
-        threads_each: if k == 0 {
-            0
-        } else {
-            // 每个 worker 的分片数 ≈ 核数 ÷ worker 数,上限 4(再多只有调度开销)。
-            // Apple Silicon 按物理核算:逻辑核含 E 核,算进去会拖长单图延迟。
-            if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-                (hw.physical_cores / k).clamp(2, 4)
-            } else {
-                (hw.logical_cores / k).clamp(1, 4)
-            }
-        },
+        threads_each: shards_per_worker(hw, k, is_apple_silicon()),
         inproc_concurrency: inproc,
         mem_cap,
         clamped_by_mem: k < want,
+    }
+}
+
+/// Apple Silicon:逻辑核 = P 核 + E 核。
+fn is_apple_silicon() -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+}
+
+/// 每个 worker 的分片数 ≈ 核数 ÷ worker 数,上限 4(再多只有调度开销)。
+/// Apple Silicon 按物理核算:逻辑核含 E 核,算进去分片虚高、单图延迟被 E 核拖长;
+/// 其余平台维持逻辑核口径(超线程吃这个负载有增益)。
+/// `apple` 由调用方按平台传入而非就地 cfg!,这样两种口径都能被单测覆盖。
+fn shards_per_worker(hw: &HwInfo, k: usize, apple: bool) -> usize {
+    if k == 0 {
+        return 0;
+    }
+    if apple {
+        (hw.physical_cores / k).clamp(2, 4)
+    } else {
+        (hw.logical_cores / k).clamp(1, 4)
     }
 }
 
@@ -241,9 +251,11 @@ mod tests {
         assert_eq!((p.workers, p.threads_each), (2, 2));
         assert!(!p.clamped_by_mem);
 
-        // 小内存机 3G/tiny(8P/16L):want=8 但闸 (3-2)/0.25=4 → 压到 4,t=clamp(16/4)=4
+        // 小内存机 3G/tiny(8P/16L):want=8 但闸 (3-2)/0.25=4 → 压到 4
         let p = plan(&hw(8, 16, 3), Tiny, 0);
-        assert_eq!((p.workers, p.threads_each), (4, 4));
+        assert_eq!(p.workers, 4);
+        // 分片数口径随平台:逻辑核 16/4=4;Apple 走物理核 8/4=2
+        assert_eq!(p.threads_each, if is_apple_silicon() { 2 } else { 4 });
         assert!(p.clamped_by_mem);
         // small 实测前的保守预算 0.5G:6G 机闸 (6-2)/0.5=8,不约束 want=4
         let p = plan(&hw(8, 8, 6), Small, 0);
@@ -262,14 +274,18 @@ mod tests {
 
         // 手动覆盖:优先于档位上限,仍受内存闸
         let p = plan(&hw(12, 18, 32), Tiny, 6);
-        assert_eq!((p.workers, p.threads_each), (6, 3));
+        assert_eq!(p.workers, 6);
+        // 逻辑核 18/6=3;Apple 物理核 12/6=2
+        assert_eq!(p.threads_each, if is_apple_silicon() { 2 } else { 3 });
         let p = plan(&hw(8, 16, 3), Tiny, 8);
         assert_eq!(p.workers, 4);
         assert!(p.clamped_by_mem);
 
-        // 高端 16C/32T/tiny:K=min(16,8,16)=8, t=clamp(32/8)=4(总线程=32≈逻辑核)
+        // 高端 16C/32T/tiny:K=min(16,8,16)=8,t=clamp(32/8)=4(总线程≈逻辑核);
+        // Apple 物理核口径 16/8=2
         let p = plan(&hw(16, 32, 64), Tiny, 0);
-        assert_eq!((p.workers, p.threads_each), (8, 4));
+        assert_eq!(p.workers, 8);
+        assert_eq!(p.threads_each, if is_apple_silicon() { 2 } else { 4 });
 
         // 内存探测失败(total=0):跳过闸
         let mut h = hw(4, 4, 16);
@@ -279,9 +295,10 @@ mod tests {
         assert_eq!(p.mem_cap, usize::MAX);
         assert!(!p.clamped_by_mem);
 
-        // 单核极端:L=1 → max(1, L/2)=1, t=clamp(1/1)=1
+        // 单核极端:L=1 → max(1, L/2)=1;分片数下限按口径抬到 1(逻辑核)/ 2(Apple)
         let p = plan(&hw(1, 1, 4), Tiny, 0);
-        assert_eq!((p.workers, p.threads_each), (1, 1));
+        assert_eq!(p.workers, 1);
+        assert_eq!(p.threads_each, if is_apple_silicon() { 2 } else { 1 });
 
         // Apple M4(4P+6E):K=min(4,8,5)=4,t=clamp(10/4)=2——多进程扇出吃
         // P 核,E 核留给系统;引擎线程默认 4(P 核)见 bootstrap,不在此表
@@ -293,9 +310,11 @@ mod tests {
     fn table_gpu() {
         use qppocr::DeviceChoice;
 
-        // GPU 封顶 4:32G 机 tiny → K=4,t=clamp(18/4)=4,inproc=2(引擎流水深度约束)
+        // GPU 封顶 4:32G 机 tiny → K=4,inproc=2(引擎流水深度约束);
+        // 分片数逻辑核口径 18/4=4(触上限),Apple 物理核 12/4=3
         let p = plan_for(&hw(12, 18, 32), Tiny, 0, &DeviceChoice::gpu());
-        assert_eq!((p.workers, p.threads_each, p.inproc_concurrency), (4, 4, 2));
+        assert_eq!((p.workers, p.inproc_concurrency), (4, 2));
+        assert_eq!(p.threads_each, if is_apple_silicon() { 3 } else { 4 });
         assert!(!p.clamped_by_mem);
 
         // 16G 机 GPU tiny:预算 2.9G,闸 (16-4)/2.9=4 → K=4 恰好不压
@@ -314,5 +333,23 @@ mod tests {
         // CPU 路径不受影响
         let p = plan_for(&hw(12, 18, 32), Tiny, 0, &DeviceChoice::Cpu);
         assert_eq!((p.workers, p.threads_each), (8, 2));
+    }
+
+    /// 分片数两种口径都要覆盖:本机只跑得到其中一条,另一条靠显式传参走到。
+    #[test]
+    fn shards_per_worker_both_modes() {
+        let h = hw(8, 16, 3);
+        assert_eq!(shards_per_worker(&h, 4, false), 4); // 逻辑核口径
+        assert_eq!(shards_per_worker(&h, 4, true), 2); // Apple 物理核口径
+
+        // 上限夹到 4:128/4=32、物理核同理
+        assert_eq!(shards_per_worker(&hw(64, 128, 256), 4, false), 4);
+        assert_eq!(shards_per_worker(&hw(64, 128, 256), 4, true), 4);
+        // 下限:逻辑核兜 1,Apple 兜 2(核数 ÷ worker 数可能为 0)
+        assert_eq!(shards_per_worker(&h, 32, false), 1);
+        assert_eq!(shards_per_worker(&h, 32, true), 2);
+        // 无 worker(内存闸压到 0)时不分片
+        assert_eq!(shards_per_worker(&h, 0, false), 0);
+        assert_eq!(shards_per_worker(&h, 0, true), 0);
     }
 }
