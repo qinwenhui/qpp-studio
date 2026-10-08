@@ -194,19 +194,9 @@ pub fn set_pdf_mode(app: &AppHandle, id: &str, extract: bool) -> Result<bool, St
     if meta.extract == extract {
         return Ok(false);
     }
-    if extract {
-        // 切直提必须有文本层(ingest 时的 can_extract 可能是 false)
-        let src = PDF_STORE
-            .lock()
-            .unwrap()
-            .get(id)
-            .cloned()
-            .ok_or("PDF 条目不存在")?;
-        let bytes = std::fs::read(&src).map_err(|e| format!("读取 PDF 失败: {e}"))?;
-        if !crate::pdf::has_text_layer(&bytes) {
-            return Err("此 PDF 没有文本层,只能 OCR".into());
-        }
-    }
+    // 不再硬校验文本层:直提模式对无文本层的页自动回退 OCR——
+    // 混合文档(前几页扫描、正文有文本层)也能整册切直提;
+    // 纯扫描件切直提 = 全册回退,效果等同 OCR 模式
     // 清结果 + 改模式 + 作废队列中同 id 旧任务 → 全册重跑
     PDF_RESULTS.lock().unwrap().insert(id.to_string(), BTreeMap::new());
     PDF_PAGES.lock().unwrap().get_mut(id).unwrap().extract = extract;
@@ -237,6 +227,61 @@ pub fn set_pdf_mode(app: &AppHandle, id: &str, extract: bool) -> Result<bool, St
         },
     );
     Ok(true)
+}
+
+/// 渲染 + OCR 一页(按需单页、正常 OCR 与「直提失败回退」共用)。
+/// 引擎有界等待(启动头几秒);条目已删/引擎迟迟不就绪返回 None,
+/// 由调用方决定跳过还是给错误回执(保持两条路径的原语义)。
+fn ocr_doc_page(
+    state: &crate::AppCtx,
+    doc: &pdfium_render::prelude::PdfDocument<'_>,
+    id: &str,
+    page: u32,
+) -> Option<crate::dto::OcrOutcomeDto> {
+    let mut engine = state.engine.current();
+    for _ in 0..150 {
+        if engine.is_some() {
+            break;
+        }
+        if !PDF_PAGES.lock().unwrap().contains_key(id) {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        engine = state.engine.current();
+    }
+    let engine = engine?;
+    let out = match crate::pdf::render_doc_page(doc, page, crate::pdf::DPI_OCR)
+        .and_then(|(w, h, rgb)| qppocr::rgb_from_bytes(w, h, rgb).map_err(|e| e.to_string()))
+    {
+        Ok(img) => {
+            let r =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.run(&img)));
+            crate::dto::outcome_from(match r {
+                Ok(Ok(v)) => Ok(v),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(qppocr::Error::Image("引擎内部错误".into())),
+            })
+        }
+        Err(e) => crate::dto::outcome_err(e),
+    };
+    Some(out)
+}
+
+/// 直提一页,失败/整页无文本(扫描页)时回退 OCR。
+/// None 仅当回退的 OCR 也无法进行(引擎未就绪且条目已删)。
+fn extract_page_with_fallback(
+    state: &crate::AppCtx,
+    doc: &pdfium_render::prelude::PdfDocument<'_>,
+    id: &str,
+    page: u32,
+) -> Option<crate::dto::OcrOutcomeDto> {
+    let extracted = crate::pdf::extract_doc_text_lines(doc, page, crate::pdf::DPI_OCR)
+        .ok()
+        .filter(|ls| ls.iter().any(|(t, _, _)| !t.trim().is_empty()));
+    match extracted {
+        Some(lines) => Some(extract_lines_to_outcome(lines)),
+        None => ocr_doc_page(state, doc, id, page),
+    }
 }
 
 /// 常驻按需执行线程:逐页 渲染+OCR。同一 PDF 的字节与文档解析结果缓存
@@ -302,42 +347,17 @@ pub fn spawn_ondemand_worker(app: AppHandle) {
                 continue;
             }
             let doc = cur_doc.as_ref().expect("刚校验过");
-            // 文本层 PDF 单页默认直提;force_ocr(用户点「本页改用OCR」)走 OCR
+            // 文本层 PDF 单页默认直提(无文本页自动回退 OCR);
+            // force_ocr(用户点「本页改用OCR」)强制走 OCR
             let outcome = if cur_extract && !force_ocr {
-                // 文本层 PDF:单页也走直提(毫秒级,无需引擎)
-                crate::pdf::extract_doc_text_lines(doc, page, crate::pdf::DPI_OCR)
-                    .map(extract_lines_to_outcome)
-                    .unwrap_or_else(crate::dto::outcome_err)
-            } else {
-                // 引擎有界等待(启动头几秒)
-                let mut engine = state.engine.current();
-                for _ in 0..150 {
-                    if engine.is_some() {
-                        break;
-                    }
-                    if !PDF_PAGES.lock().unwrap().contains_key(&id) {
-                        engine = None;
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(400));
-                    engine = state.engine.current();
+                match extract_page_with_fallback(&state, doc, &id, page) {
+                    Some(out) => out,
+                    None => continue,
                 }
-                let Some(engine) = engine else { continue };
-                match crate::pdf::render_doc_page(doc, page, crate::pdf::DPI_OCR)
-                    .and_then(|(w, h, rgb)| {
-                        qppocr::rgb_from_bytes(w, h, rgb).map_err(|e| e.to_string())
-                    }) {
-                    Ok(img) => {
-                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            engine.run(&img)
-                        }));
-                        crate::dto::outcome_from(match r {
-                            Ok(Ok(v)) => Ok(v),
-                            Ok(Err(e)) => Err(e),
-                            Err(_) => Err(qppocr::Error::Image("引擎内部错误".into())),
-                        })
-                    }
-                    Err(e) => crate::dto::outcome_err(e),
+            } else {
+                match ocr_doc_page(&state, doc, &id, page) {
+                    Some(out) => out,
+                    None => continue,
                 }
             };
             let d = insert_result(&id, page, outcome.clone());
@@ -607,9 +627,9 @@ fn serial_pdf_extract(app: &AppHandle, job: &PdfOcrJob) {
         if !PDF_PAGES.lock().unwrap().contains_key(&job.id) {
             break; // 条目已删
         }
-        let outcome = crate::pdf::extract_doc_text_lines(&doc, page, crate::pdf::DPI_OCR)
-            .map(extract_lines_to_outcome)
-            .unwrap_or_else(crate::dto::outcome_err);
+        // 直提失败/整页无文本(扫描页)→ 回退 OCR,不再产出错误回执
+        let outcome = extract_page_with_fallback(&state, &doc, &job.id, page)
+            .unwrap_or_else(|| crate::dto::outcome_err("引擎未就绪,该页未能识别"));
         let d = insert_result(&job.id, page, outcome.clone());
         emit_page(app, &job.id, page, &outcome, d, job.total);
     }

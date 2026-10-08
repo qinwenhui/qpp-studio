@@ -207,20 +207,19 @@
       </span>
     {/if}
 
-    {#if active?.canExtract}
-      {#if pdf?.extract}
-        <span class="ocr-badge" title="整册走文本层直提:毫秒级/页,无框线">直提</span>
-      {:else}
-        <span class="ocr-badge" title="整册走 OCR 识别:有精确框线">OCR</span>
-      {/if}
-      <button
-        class="ctrl-btn"
-        onclick={() => switchMode()}
-        title={pdf?.extract ? '整册改用 OCR(有框线,慢)' : '整册改用文本层直提(毫秒级,无框线)'}>
-        <Icon name="rotateCcw" size={12} />
-        {pdf?.extract ? '改用OCR' : '改用直提'}
-      </button>
+    <!-- 整册识别方式:任何 PDF 都可切(混合文档切直提时,无文本层页自动回退 OCR) -->
+    {#if pdf?.extract}
+      <span class="ocr-badge" title="整册走文本层直提:毫秒级/页,无框线;无文本层的页自动回退 OCR">直提</span>
+    {:else}
+      <span class="ocr-badge" title="整册走 OCR 识别:有精确框线">OCR</span>
     {/if}
+    <button
+      class="ctrl-btn"
+      onclick={() => switchMode()}
+      title={pdf?.extract ? '整册改用 OCR(有框线,较慢)' : '整册改用文本层直提:毫秒级/页;无文本层的页自动回退 OCR'}>
+      <Icon name="rotateCcw" size={12} />
+      {pdf?.extract ? '改用OCR' : '改用直提'}
+    </button>
 
     <span class="page-hint">{active?.item.name}</span>
   </div>
