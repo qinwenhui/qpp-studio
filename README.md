@@ -56,16 +56,30 @@ Tauri v2 + Svelte 5 构建,数据不出机器。
 
 ### 从源码构建
 
+前置要求:
+
+- **Node.js ≥ 20**、**Rust ≥ 1.85**(rustup 安装)
+- Windows:VS Build Tools(含 MSVC 组件);WebView2 运行时 Win10/11 一般自带
+- macOS:Xcode Command Line Tools(`xcode-select --install`)
+
 ```bash
-# 前置:Node ≥ 20、Rust ≥ 1.85
+git clone https://github.com/qinwenhui/qpp-studio.git
+cd qpp-studio
 npm install
-# 可选:本地有 qppocr 仓库时可装配模型进安装包(并排放置即可)
-# node tools/stage-models.mjs --slim
-npm run tauri dev        # 开发调试
-npm run tauri build      # 出安装包
+npm run tauri dev        # 开发调试(热重载)
+npm run tauri build      # 构建发布包
 ```
 
-CI 会自动检查每次提交;打 tag(如 `v0.3.0`)即自动构建并发布 Windows 安装包到 Releases。
+`tauri build` 是完整的原生打包:先构建前端(产物只是内嵌资源),再编译 Rust
+内核与推理引擎,最后产出各平台安装包——不是只出一个网页。构建产物:
+
+| 平台 | 产物 |
+|---|---|
+| Windows | `src-tauri/target/release/bundle/nsis/*-setup.exe`(NSIS 安装包,双击安装) |
+| Windows | `src-tauri/target/release/qpp-studio.exe`(裸可执行文件;旁边需有 `models/` 与 `pdfium.dll`,可从安装包或仓库 `models-bundle/` 取) |
+| macOS | `src-tauri/target/release/bundle/macos/QPP Studio.app`、`bundle/dmg/*.dmg` |
+
+Tiny 档模型已随仓库内置,构建产物开箱即用;Small / Medium 档的打包方式见下一节。
 
 ### 模型文件
 
