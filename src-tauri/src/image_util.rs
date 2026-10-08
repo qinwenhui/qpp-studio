@@ -107,8 +107,10 @@ fn resolve_heic(path: &Path) -> Result<std::path::PathBuf, qppocr::Error> {
 /// 解码并应用 EXIF Orientation(无标签/解码失败回退原图)。
 pub fn decode_file_oriented(path: &Path) -> Result<DecodedImage, qppocr::Error> {
     let path = resolve_heic(path)?;
-    // 头部探测先挡天文尺寸:解码本身就要 w*h*3 字节
-    let (pw, ph) = probe_dims_oriented(&path)?;
+    // 整文件只读一次:超大图闸在字节上探测(曾为探测再读一遍全文件,
+    // 100 张批量基准实测多耗 3s 级墙钟)
+    let bytes = std::fs::read(&path)?;
+    let (pw, ph) = probe_dims_from_bytes(&bytes)?;
     if (pw as u64) * (ph as u64) > DECODE_MAX_PIXELS {
         return Err(qppocr::Error::Image(format!(
             "图片过大:{pw}×{ph}(约 {:.1} 亿像素),超过 {:.0} 亿像素上限,请裁切或压缩后重试",
@@ -116,7 +118,6 @@ pub fn decode_file_oriented(path: &Path) -> Result<DecodedImage, qppocr::Error> 
             DECODE_MAX_PIXELS as f64 / 1e8
         )));
     }
-    let bytes = std::fs::read(&path)?;
     decode_bytes_oriented(&bytes)
 }
 
@@ -167,14 +168,19 @@ fn exif_orientation(bytes: &[u8]) -> Option<Orientation> {
 pub fn probe_dims_oriented(path: &Path) -> Result<(u32, u32), qppocr::Error> {
     let path = resolve_heic(path)?;
     let bytes = std::fs::read(&path)?;
-    let mut reader = ImageReader::new(std::io::Cursor::new(&bytes));
+    probe_dims_from_bytes(&bytes)
+}
+
+/// 在已读字节上探测"显示方向"宽高(EXIF 5-8 需要交换宽高)。
+fn probe_dims_from_bytes(bytes: &[u8]) -> Result<(u32, u32), qppocr::Error> {
+    let mut reader = ImageReader::new(std::io::Cursor::new(bytes));
     let (w, h) = reader
         .with_guessed_format()
         .map_err(|e| qppocr::Error::Image(format!("读头部失败: {e}")))?
         .into_dimensions()
         .map_err(|e| qppocr::Error::Image(format!("读头部失败: {e}")))?;
     let transpose = matches!(
-        exif_orientation(&bytes),
+        exif_orientation(bytes),
         Some(
             Orientation::Rotate90
                 | Orientation::Rotate270
