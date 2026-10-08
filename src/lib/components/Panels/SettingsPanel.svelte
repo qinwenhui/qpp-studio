@@ -59,6 +59,16 @@
       .catch(() => (hw = null));
   });
 
+  // 模型目录:系统目录对话框选择(mac 上 Cmd+V 粘贴路径不可靠,选择器是主交互)
+  async function pickModelsDir() {
+    try {
+      const dir = await api.pickFolder();
+      if (dir) await updateSettings({ modelsDir: dir });
+    } catch (e) {
+      toast('error', String(e));
+    }
+  }
+
   function startRecord() {
     recording = true;
     pendingHotkey = '';
@@ -240,12 +250,20 @@
 
       <div class="field">
         <span class="k">模型目录</span>
-        <input
-          class="input dir"
-          placeholder="默认:随安装包 / 自动探测"
-          value={settings.modelsDir ?? ''}
-          onchange={(e) => updateSettings({ modelsDir: e.currentTarget.value || undefined })}
-        />
+        <div class="dir-row">
+          <input
+            class="input dir"
+            placeholder="默认:随安装包 / 自动探测"
+            value={settings.modelsDir ?? ''}
+            onchange={(e) => updateSettings({ modelsDir: e.currentTarget.value.trim() || undefined })}
+          />
+          <button
+            class="badge-btn"
+            onclick={() => void pickModelsDir()}
+            title="在系统文件对话框里选择模型目录"
+          >选择…</button>
+        </div>
+        <p class="note">选择或粘贴模型目录(内含 tiny/ 等子目录),保存时体检并立即重建引擎;清空恢复自动探测</p>
       </div>
 
       <div class="field">
@@ -655,6 +673,18 @@
     background: var(--accent-contrast);
   }
 
+  .dir-row {
+    display: flex;
+    gap: 6px;
+    width: 100%;
+  }
+  .dir-row .input {
+    flex: 1;
+    min-width: 0;
+  }
+  .dir-row .badge-btn {
+    flex: none;
+  }
   .hotkey-box {
     display: flex;
     align-items: center;

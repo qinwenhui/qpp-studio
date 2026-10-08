@@ -97,6 +97,11 @@ impl EngineManager {
         self.models_dir.read().unwrap().clone()
     }
 
+    /// 更新模型目录(设置面板改目录时;引擎随后由 reconfigure 用新目录重建)
+    pub fn set_models_dir(&self, dir: PathBuf) {
+        *self.models_dir.write().unwrap() = dir;
+    }
+
     /// 切档前体检:模型文件与字典是否齐备。缺失时返回可直接展示的修复指引。
     /// 引擎字典查找顺序:{tier}/dict.txt → models/dict.txt → ppocr_keys.txt → 内嵌。
     pub fn tier_preflight(dir: &std::path::Path, tier: qppocr::Tier) -> Result<(), String> {

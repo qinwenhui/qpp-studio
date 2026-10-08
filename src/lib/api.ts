@@ -37,6 +37,7 @@ export const api = {
   deviceBenchmark: () => invoke<DeviceBench>('device_benchmark'),
 
   pickImages: () => invoke<ImageItem[]>('pick_images'),
+  pickFolder: () => invoke<string | null>('pick_folder'),
   addFiles: (paths: string[]) => invoke<ImageItem[]>('add_files', { paths }),
   readClipboardImage: () => invoke<ImageItem>('read_clipboard_image'),
 

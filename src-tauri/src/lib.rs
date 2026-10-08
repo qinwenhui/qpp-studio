@@ -134,7 +134,7 @@ pub fn media_url(token: &str) -> String {
 
 /// 模型目录解析：设置覆盖 → 资源目录（安装态）→ exe 同级（便携态）
 /// → 开发态回退并排的 qppocr 仓库。
-fn resolve_models_dir(app: &AppHandle, settings: &Settings) -> PathBuf {
+pub(crate) fn resolve_models_dir(app: &AppHandle, settings: &Settings) -> PathBuf {
     if let Some(dir) = &settings.models_dir {
         let p = PathBuf::from(dir);
         if p.is_dir() {
@@ -359,6 +359,7 @@ pub fn run() {
             commands::device_benchmark,
             commands::set_window_title,
             commands::pick_images,
+            commands::pick_folder,
             commands::add_files,
             commands::read_clipboard_image,
             commands::ocr_image,

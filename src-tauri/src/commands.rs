@@ -83,6 +83,16 @@ pub async fn pick_images(app: AppHandle) -> Result<Vec<ImageItemDto>, String> {
     ingest_paths(&app, paths).await
 }
 
+/// 系统目录选择对话框(模型目录等设置项)。取消返回 None。
+#[tauri::command]
+pub async fn pick_folder() -> Result<Option<String>, String> {
+    let handle = rfd::AsyncFileDialog::new()
+        .set_title("选择模型目录")
+        .pick_folder()
+        .await;
+    Ok(handle.map(|h| h.path().to_string_lossy().into_owned()))
+}
+
 #[tauri::command]
 pub async fn add_files(app: AppHandle, paths: Vec<String>) -> Result<Vec<ImageItemDto>, String> {
     let paths = paths.into_iter().map(PathBuf::from).collect();
@@ -365,14 +375,38 @@ pub fn settings_get(state: State<AppCtx>) -> Settings {
 pub async fn settings_set(
     app: AppHandle,
     state: State<'_, AppCtx>,
-    settings: Settings,
+    mut settings: Settings,
 ) -> Result<Settings, String> {
     let old = state.settings.read().unwrap().clone();
     if settings.hotkey != old.hotkey {
         crate::hotkey::set(&app, &old.hotkey, &settings.hotkey)?;
     }
     let theme_changed = settings.theme != old.theme;
-    let engine_changed = settings.tier != old.tier
+    // 粘贴的路径可能带尾部空白/换行,is_dir() 会失配——一律 trim
+    if let Some(d) = settings.models_dir.take() {
+        let trimmed = d.trim().to_string();
+        settings.models_dir = (!trimmed.is_empty()).then_some(trimmed);
+    }
+    // 模型目录改动也走引擎重建(只存盘不重建=改了不生效,mac 实测踩过)
+    let dir_changed = settings.models_dir != old.models_dir;
+    let candidate_dir: Option<PathBuf> = if dir_changed {
+        match &settings.models_dir {
+            Some(d) => {
+                let p = PathBuf::from(d);
+                if !p.is_dir() {
+                    return Err(format!(
+                        "模型目录不存在:{d}(检查路径是否完整,或用「选择…」按钮选取)"
+                    ));
+                }
+                Some(p)
+            }
+            None => None, // 清空 = 恢复自动探测
+        }
+    } else {
+        None
+    };
+    let engine_changed = dir_changed
+        || settings.tier != old.tier
         || settings.preset != old.preset
         || settings.device != old.device
         || settings.orientation != old.orientation
@@ -386,6 +420,10 @@ pub async fn settings_set(
     }
     if theme_changed {
         crate::windowfx::apply_theme_effect(&app, &settings.theme);
+    }
+    if dir_changed {
+        let dir = candidate_dir.unwrap_or_else(|| crate::resolve_models_dir(&app, &settings));
+        state.engine.set_models_dir(dir);
     }
     if engine_changed {
         let tier = parse_tier(&settings.tier).unwrap_or(qppocr::Tier::Tiny);
