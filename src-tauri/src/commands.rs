@@ -989,53 +989,88 @@ pub async fn pdf_ocr_range(
     .map_err(|e| e)
 }
 
-/// 行集 → Markdown(版式感知):行高相对聚类判标题层级,垂直间隙突变分段落。
-/// OCR 只有几何信息(无字体/加粗),这是诚实能做到的「保留格式」。
+/// 行的「字面尺寸」:优先逐字盒短边中位数(真实字面大小,与纸张视图
+/// 同口径);无 chars(直提/兜底)时用行框左右边长均值 ×0.78——边长
+/// 抗旋转,且行框含行距余量,直接用会整体虚高。
+fn line_char_size(l: &crate::dto::TextLineDto) -> f32 {
+    let mut shorts: Vec<f32> = Vec::new();
+    for c in &l.chars {
+        if c.text == " " {
+            continue;
+        }
+        let xs = c.pts.map(|p| p[0]);
+        let ys = c.pts.map(|p| p[1]);
+        let w = xs.iter().cloned().fold(f32::MIN, f32::max)
+            - xs.iter().cloned().fold(f32::MAX, f32::min);
+        let h = ys.iter().cloned().fold(f32::MIN, f32::max)
+            - ys.iter().cloned().fold(f32::MAX, f32::min);
+        if w > 0.0 && h > 0.0 {
+            shorts.push(w.min(h));
+        }
+    }
+    if !shorts.is_empty() {
+        shorts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        return shorts[shorts.len() / 2];
+    }
+    let dist = |a: [f32; 2], b: [f32; 2]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
+    let edge = (dist(l.pts[0], l.pts[3]) + dist(l.pts[1], l.pts[2])) / 2.0;
+    (edge * 0.78).max(1.0)
+}
+
+/// 行集 → Markdown(版式感知):字面尺寸相对正文基准判标题层级
+/// (1.9×/1.45×/1.18× ≈ 文档常规 H1/H2/H3 与正文之比),垂直净间隙
+/// 突变分段落。OCR 只有几何信息(无字体/加粗),这是诚实能做到的
+/// 「保留格式」。
 fn lines_to_markdown(lines: &[crate::dto::TextLineDto], base_level: usize) -> String {
-    // 每行 (高度, 中心y)
+    // 每行 (字面尺寸, 中心y)
     let metrics: Vec<(f32, f32)> = lines
         .iter()
         .map(|l| {
             let ys = l.pts.map(|p| p[1]);
             let hmax = ys.iter().cloned().fold(f32::MIN, f32::max);
             let hmin = ys.iter().cloned().fold(f32::MAX, f32::min);
-            ((hmax - hmin).max(1.0), (hmax + hmin) / 2.0)
+            (line_char_size(l), (hmax + hmin) / 2.0)
         })
         .collect();
     let mut hs: Vec<f32> = metrics.iter().map(|(h, _)| *h).collect();
     hs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let med_h = hs.get(hs.len() / 2).copied().unwrap_or(1.0);
+    // 下中位:标题行总是更大,上中位会被标题污染(6 行含 3 标题时基准漂到 H3)
+    let body = hs.get(hs.len().saturating_sub(1) / 2).copied().unwrap_or(1.0).max(1.0);
 
     let mut out = String::new();
-    let mut prev: Option<(f32, f32)> = None; // (中心y, 行高)
-    for (l, (h, cy)) in lines.iter().zip(metrics) {
+    let mut prev: Option<(f32, f32)> = None; // (中心y, 字面尺寸)
+    for (l, (size, cy)) in lines.iter().zip(metrics) {
         let text = l.text.trim();
         if text.is_empty() {
             continue;
         }
-        // 段落:与上一行垂直间隙 > 1.8×行高 → 空行分隔
-        if let Some((p_cy, p_h)) = prev {
-            if cy - p_cy > p_h * 1.8 {
+        // 段落:行间垂直净间隙 > 0.75×正文 → 空行分隔
+        if let Some((p_cy, p_size)) = prev {
+            let gap = cy - p_cy - (p_size + size) / 2.0;
+            if gap > body * 0.75 {
                 out.push('\n');
             }
         }
-        // 标题层级:行高 ≥1.5×中位 → 大标题,≥1.2× → 次级
-        let level = if h >= med_h * 1.5 {
+        // 标题层级:H1≥1.9×正文,H2≥1.45×,H3≥1.18×(并入 base_level,clamp 1..=6)
+        let level = if size >= body * 1.9 {
             base_level
-        } else if h >= med_h * 1.2 {
+        } else if size >= body * 1.45 {
             base_level + 1
+        } else if size >= body * 1.18 {
+            base_level + 2
         } else {
             0
         };
         if level > 0 {
-            for _ in 0..level {
+            let lvl = level.clamp(1, 6);
+            for _ in 0..lvl {
                 out.push('#');
             }
             out.push(' ');
         }
         out.push_str(text);
         out.push('\n');
-        prev = Some((cy, h));
+        prev = Some((cy, size));
     }
     out
 }
@@ -1330,4 +1365,74 @@ pub async fn pdf_extract_all(
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e: String| e)
+}
+
+
+#[cfg(test)]
+mod md_tests {
+    use super::*;
+
+    fn line(text: &str, char_h: f32, y: f32) -> crate::dto::TextLineDto {
+        // 构造一行:宽随字数,chars 每字一个 char_h 见方的盒
+        let n = text.chars().count().max(1) as f32;
+        let w = n * char_h;
+        crate::dto::TextLineDto {
+            text: text.into(),
+            confidence: 1.0,
+            rotation: 0,
+            retried: false,
+            pts: [
+                [0.0, y],
+                [w, y],
+                [w, y + char_h],
+                [0.0, y + char_h],
+            ],
+            chars: text
+                .chars()
+                .enumerate()
+                .map(|(i, c)| crate::dto::CharSpanDto {
+                    text: c.to_string(),
+                    pts: [
+                        [i as f32 * char_h, y],
+                        [(i + 1) as f32 * char_h, y],
+                        [(i + 1) as f32 * char_h, y + char_h],
+                        [i as f32 * char_h, y + char_h],
+                    ],
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn heading_levels_and_paragraph() {
+        // 正文 20px 三行(紧凑) + H3 24px + H2 30px + H1 40px + 段落间隙行
+        let lines = vec![
+            line("正文第一行", 20.0, 0.0),
+            line("正文第二行", 20.0, 26.0),
+            line("小节标题", 24.0, 90.0),   // 与上行净间隙 90-26-22=42 > 0.75*20=15 → 分段
+            line("二级标题", 30.0, 124.0),
+            line("大标题", 40.0, 160.0),
+            line("正文第三行", 20.0, 300.0), // 大段间隙 → 分段
+        ];
+        let md = lines_to_markdown(&lines, 1);
+        let ls: Vec<&str> = md.lines().collect();
+        assert_eq!(ls[0], "正文第一行");
+        assert_eq!(ls[1], "正文第二行");
+        assert_eq!(ls[2], "", "段前应有空行");
+        assert_eq!(ls[3], "### 小节标题");
+        assert_eq!(ls[4], "## 二级标题"); // base_level=1 → H2 = 2 级
+        assert_eq!(ls[5], "# 大标题");
+        assert!(md.matches(char::from(10)).count() >= 7);
+    }
+
+    #[test]
+    fn no_chars_uses_edge_with_padding() {
+        // 无 chars:字面尺寸 = 行框边长 × 0.78(行高 40 → 31.2 ≈ 正文 1.56× → H2)
+        let mut l = line("只有行框", 20.0, 0.0);
+        l.pts = [[0.0, 0.0], [80.0, 0.0], [80.0, 40.0], [0.0, 40.0]];
+        l.chars = Vec::new();
+        let body = line("正文基准", 20.0, 60.0);
+        let md = lines_to_markdown(&[body, l], 1);
+        assert!(md.contains("## "), "行框 40px 应判为标题: {md}");
+    }
 }

@@ -5,6 +5,7 @@
   import { api } from '$lib/api';
   import { app, toast } from '$lib/state/app.svelte';
   import { getActiveItem, imagesStore, reRecognize } from '$lib/state/images.svelte';
+  import type { TextLine } from '$lib/types';
 
   let search = $state('');
 
@@ -44,25 +45,49 @@
       .join('\n');
   }
 
-  /** 版式感知 Markdown:行高聚类判标题,行距突变分段落(与后端 merged md 同规则) */
+  /** 行的「字面尺寸」:优先逐字盒短边中位(真实字面,与纸张视图同口径);
+   *  无 chars(直提)时用行框左右边长均值 ×0.78(抗旋转,行框含行距余量)。 */
+  function charSize(l: TextLine): number {
+    const shorts = (l.chars ?? [])
+      .filter((c) => c.text !== ' ')
+      .map((c) => {
+        const xs = c.pts.map((p) => p[0]);
+        const ys = c.pts.map((p) => p[1]);
+        const w = Math.max(...xs) - Math.min(...xs);
+        const h = Math.max(...ys) - Math.min(...ys);
+        return Math.min(w, h);
+      })
+      .sort((a, b) => a - b);
+    if (shorts.length) return shorts[shorts.length >> 1];
+    const eL = Math.hypot(l.pts[3][0] - l.pts[0][0], l.pts[3][1] - l.pts[0][1]);
+    const eR = Math.hypot(l.pts[2][0] - l.pts[1][0], l.pts[2][1] - l.pts[1][1]);
+    return Math.max(1, ((eL + eR) / 2) * 0.78);
+  }
+
+  /** 版式感知 Markdown:字面尺寸相对正文基准判标题层级(1.9×/1.45×/1.18×
+   *  ≈ 文档常规 H1/H2/H3 之比),垂直净间隙突变分段落(与后端同规则)。 */
   function toMarkdown(): string {
     const metrics = lines.map((l) => {
       const ys = l.pts.map((p) => p[1]);
-      const h = Math.max(1, Math.max(...ys) - Math.min(...ys));
-      return { h, cy: (Math.max(...ys) + Math.min(...ys)) / 2 };
+      return { size: charSize(l), cy: (Math.max(...ys) + Math.min(...ys)) / 2 };
     });
-    const sorted = metrics.map((m) => m.h).sort((a, b) => a - b);
-    const med = sorted[sorted.length >> 1] ?? 1;
+    const sorted = metrics.map((m) => m.size).sort((a, b) => a - b);
+    // 下中位:标题行总是更大,上中位会被标题污染
+    const body = Math.max(1, sorted[(sorted.length - 1) >> 1] ?? 1);
     let out = '';
-    let prev: { cy: number; h: number } | null = null;
+    let prev: { cy: number; size: number } | null = null;
     lines.forEach((l, i) => {
       const text = l.text.trim();
       if (!text) return;
-      const { h, cy } = metrics[i];
-      if (prev && cy - prev.cy > prev.h * 1.8) out += '\n';
-      const level = h >= med * 1.5 ? 1 : h >= med * 1.2 ? 2 : 0;
+      const { size, cy } = metrics[i];
+      if (prev) {
+        const gap = cy - prev.cy - (prev.size + size) / 2;
+        if (gap > body * 0.75) out += '\n';
+      }
+      const level =
+        size >= body * 1.9 ? 1 : size >= body * 1.45 ? 2 : size >= body * 1.18 ? 3 : 0;
       out += (level ? '#'.repeat(level) + ' ' : '') + text + '\n';
-      prev = { cy, h };
+      prev = { cy, size };
     });
     return out;
   }

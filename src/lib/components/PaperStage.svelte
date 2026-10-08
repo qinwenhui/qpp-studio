@@ -121,13 +121,33 @@
       // 原向模式的行倾角:横排取 TL→TR 边的角度(竖排字符已按真实坐标直立,无需旋转)
       const angle = vertical ? 0 : Math.atan2(l.pts[1][1] - l.pts[0][1], l.pts[1][0] - l.pts[0][0]);
 
-      // 估算兜底路径(引擎无 chars 时):字号需保证"字数×字宽 ≤ 框宽"
+      // 估算兜底路径(引擎无 chars 时):字号需保证"字数×字宽 ≤ 框宽"。
+      // 框高取左右边长均值(抗旋转;y 跨度对倾斜行会虚高)
       let units = 0;
       for (const ch of l.text) units += charUnits(ch);
-      const fsBox = (vertical ? w : h) * 0.82;
+      const eL = Math.hypot(l.pts[3][0] - l.pts[0][0], l.pts[3][1] - l.pts[0][1]);
+      const eR = Math.hypot(l.pts[2][0] - l.pts[1][0], l.pts[2][1] - l.pts[1][1]);
+      const edge = (eL + eR) / 2 || h;
+      const fsBox = (vertical ? w : edge) * 0.82;
       const fsFit = units > 0 ? (vertical ? h : w) / units : fsBox;
       const fs = Math.max(4, Math.min(fsBox, fsFit));
-      return { i, x, y, w, h, fs, cfs, angle, flip: l.rotation === 180, vertical, chars, text: l.text, conf: l.confidence };
+      // 180° 判定以逐字坐标的阅读方向为准(cls 对竖排条有 90°/180° 歧义)。
+      // ⚠ 竖排的阅读惯例分语种:CJK 上→下(首字在下 = 倒置);拉丁竖排惯例
+      // 下→上(首字在下 = 正常,实测 img-001 的竖排 No native dependency)。
+      // 横行首字在右 = 倒置;无 chars(直提)回落标志。
+      const hasCJK = /[⺀-鿿豈-﫿　-〿！-｠]/.test(l.text);
+      let flip = l.rotation === 180;
+      if (chars.length >= 2) {
+        const c0 = chars[0];
+        const cN = chars[chars.length - 1];
+        if (vertical) {
+          const firstBelow = c0.y + c0.h / 2 > cN.y + cN.h / 2;
+          flip = hasCJK ? firstBelow : !firstBelow;
+        } else {
+          flip = c0.x + c0.w / 2 > cN.x + cN.w / 2;
+        }
+      }
+      return { i, x, y, w, h, fs, cfs, angle, flip, vertical, chars, text: l.text, conf: l.confidence };
     });
   });
 
@@ -276,7 +296,7 @@
                   <span
                     class="ch"
                     class:sp={c.space}
-                    style="left:{c.x}px; top:{c.y}px; width:{c.w}px; height:{c.h}px; font-size:{l.cfs}px"
+                    style="left:{l.flip && !app.fidelity && !l.vertical ? l.w - c.x - c.w : c.x}px; top:{l.flip && !app.fidelity && l.vertical ? l.h - c.y - c.h : c.y}px; width:{c.w}px; height:{c.h}px; font-size:{l.cfs}px"
                   >{c.text}</span>
                 {/each}
               {:else}{l.text}{/if}
