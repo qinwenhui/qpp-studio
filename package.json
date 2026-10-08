@@ -1,7 +1,7 @@
 {
   "name": "qpp-studio",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "QPP Studio — fast & elegant OCR powered by qppocr",
   "type": "module",
   "scripts": {

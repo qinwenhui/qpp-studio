@@ -1,6 +1,6 @@
 [package]
 name = "qpp-studio"
-version = "0.3.0"
+version = "0.3.1"
 description = "QPP Studio — fast & elegant OCR powered by qppocr"
 authors = ["qinwh"]
 license = "AGPL-3.0-or-later"
