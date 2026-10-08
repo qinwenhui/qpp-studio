@@ -413,6 +413,12 @@ pub async fn settings_set(
         || settings.enhance_contrast != old.enhance_contrast
         || settings.upscale != old.upscale;
     let conc_changed = settings.batch_concurrency != old.batch_concurrency;
+    // 切档体检先于落盘:模型不齐的档位直接拒绝、不持久化——否则切档当次
+    // 旧引擎还能撑着,重启后每次启动都构建失败(叠加事件竞态 = 永远「加载中」)
+    if settings.tier != old.tier {
+        let tier = parse_tier(&settings.tier).unwrap_or(qppocr::Tier::Tiny);
+        crate::engine::EngineManager::tier_preflight(&state.engine.models_dir(), tier)?;
+    }
     {
         let mut s = state.settings.write().unwrap();
         *s = settings.clone();

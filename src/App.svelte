@@ -145,6 +145,10 @@
           }
         }),
       ];
+      // 引擎状态是「构建完成时单发」事件:若构建在监听器挂载前就已结束
+      // (快速失败/快机型),事件永久丢失,右上角会一直停在「加载中」——
+      // 挂载后补拉一次当前真值兜底
+      void api.engineStatus().then(syncEngine).catch(() => {});
       cleanup = () => {
         for (const p of unlisteners) void p.then((f) => f());
       };

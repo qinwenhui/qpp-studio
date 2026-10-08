@@ -4,7 +4,7 @@
   import { getCurrentWindow, type Window } from '@tauri-apps/api/window';
   import Icon from '$lib/components/Icon.svelte';
   import { hasTauri } from '$lib/api';
-  import { app, toast } from '$lib/state/app.svelte';
+  import { app, setView, toast } from '$lib/state/app.svelte';
   import { settings, updateSettings } from '$lib/state/settings.svelte';
   import { THEMES } from '$lib/theme';
 
@@ -83,6 +83,14 @@
       </span>
     {:else}
       <span class="engine loading"><i class="dot"></i>引擎加载中…</span>
+    {/if}
+    {#if app.version}
+      <button
+        class="ver"
+        onclick={() => setView('settings')}
+        title={`QPP Studio v${app.version}(点击查看关于)`}
+        aria-label={`版本 ${app.version}`}
+      >v{app.version}</button>
     {/if}
   </div>
 </header>
@@ -195,6 +203,19 @@
   }
   .engine.err {
     color: var(--danger);
+  }
+  .ver {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.02em;
+    color: var(--text-faint);
+    opacity: 0.75;
+    transition: all var(--speed-fast) var(--ease-out);
+  }
+  .ver:hover {
+    opacity: 1;
+    color: var(--text-secondary);
   }
   .theme-btn {
     display: grid;
