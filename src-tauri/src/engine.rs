@@ -110,7 +110,7 @@ impl EngineManager {
         let missing: Vec<&str> = ["det.onnx", "rec.onnx"]
             .iter()
             .filter(|f| !tdir.join(f).is_file())
-            .map(|f| *f)
+            .copied()
             .collect();
         if !missing.is_empty() {
             return Err(format!(
@@ -243,7 +243,6 @@ pub(crate) fn build_engine(
                         qppocr::Tier::Tiny => 8,
                         qppocr::Tier::Small => 4,
                         qppocr::Tier::Medium => a.rec_shards,
-                        _ => a.rec_shards,
                     };
                 }
             })
@@ -258,7 +257,9 @@ pub(crate) fn build_engine(
                 .cloned()
                 .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
                 .unwrap_or_else(|| "未知 panic".into());
-            Err(format!("模型加载失败（panic）：{msg} — 模型文件可能损坏或被替换，请重新安装或校验 models 目录"))
+            Err(format!(
+                "模型加载失败（panic）：{msg} — 模型文件可能损坏或被替换，请重新安装或校验 models 目录"
+            ))
         }
     }
 }

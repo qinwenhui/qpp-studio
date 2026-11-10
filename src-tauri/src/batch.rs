@@ -24,9 +24,7 @@ impl BatchState {
         Self {
             running: AtomicBool::new(false),
             cancel: Arc::new(AtomicBool::new(false)),
-            semaphore: RwLock::new(Arc::new(tokio::sync::Semaphore::new(
-                concurrency.max(1),
-            ))),
+            semaphore: RwLock::new(Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)))),
         }
     }
 }
@@ -44,7 +42,9 @@ pub fn finalize(
     if outcome.ok {
         let item = state.items.read().unwrap().get(id).cloned();
         if let Some(item) = item {
-            state.history.append(crate::history::entry_from(&item, outcome));
+            state
+                .history
+                .append(crate::history::entry_from(&item, outcome));
         }
     }
     let _ = app.emit(
@@ -65,7 +65,13 @@ pub(crate) fn ensure_thumb(app: &AppHandle, id: &str, img: &qppocr::Image) -> Op
     if path.exists() {
         return None; // 已有,前端令牌仍有效
     }
-    match crate::thumb::make_thumb_from_rgb(img.w as u32, img.h as u32, &img.data, id, &state.dirs.thumbs) {
+    match crate::thumb::make_thumb_from_rgb(
+        img.w as u32,
+        img.h as u32,
+        &img.data,
+        id,
+        &state.dirs.thumbs,
+    ) {
         Ok(_) => Some(state.media.register(path, "image/jpeg")),
         Err(_) => None,
     }
@@ -264,15 +270,16 @@ fn run_worker_proc(
     pause: &AtomicBool,
     mut on_event: impl FnMut(WorkerEvent),
 ) {
-    let items: Vec<(String, Option<u32>)> = chunk
-        .iter()
-        .map(|t| (t.id.clone(), t.page))
-        .collect();
+    let items: Vec<(String, Option<u32>)> = chunk.iter().map(|t| (t.id.clone(), t.page)).collect();
 
     let exe = match std::env::current_exe() {
         Ok(e) => e,
         Err(e) => {
-            emit_err_items(&items, &format!("无法定位自身可执行文件: {e}"), &mut on_event);
+            emit_err_items(
+                &items,
+                &format!("无法定位自身可执行文件: {e}"),
+                &mut on_event,
+            );
             return;
         }
     };
@@ -302,7 +309,10 @@ fn run_worker_proc(
     request["tasks"] = serde_json::Value::Array(tasks);
 
     let mut stdin = child.stdin.take().expect("worker stdin");
-    if writeln!(stdin, "{request}").and_then(|_| stdin.flush()).is_err() {
+    if writeln!(stdin, "{request}")
+        .and_then(|_| stdin.flush())
+        .is_err()
+    {
         let _ = child.kill();
         let _ = child.wait();
         emit_err_items(&items, "写入 worker 失败", &mut on_event);
@@ -321,7 +331,9 @@ fn run_worker_proc(
             let Ok(resp) = serde_json::from_str::<serde_json::Value>(&line) else {
                 continue;
             };
-            let Some(id) = resp["id"].as_str() else { continue };
+            let Some(id) = resp["id"].as_str() else {
+                continue;
+            };
             if id.is_empty() {
                 continue;
             }
@@ -342,7 +354,7 @@ fn run_worker_proc(
 fn lpt_partition<T: Clone>(items: Vec<(T, u64)>, k: usize) -> Vec<Vec<T>> {
     let k = k.max(1);
     let mut sorted = items;
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|(_, px)| std::cmp::Reverse(*px));
     let mut chunks: Vec<Vec<T>> = vec![Vec::new(); k];
     let mut loads = vec![0u64; k];
     for (item, px) in sorted {
@@ -376,7 +388,13 @@ pub(crate) fn run_fleet(
     }
     let k = k.clamp(1, items.len());
     let chunks = lpt_partition(
-        items.into_iter().map(|t| { let w = t.weight; (t, w) }).collect(),
+        items
+            .into_iter()
+            .map(|t| {
+                let w = t.weight;
+                (t, w)
+            })
+            .collect(),
         k,
     );
 

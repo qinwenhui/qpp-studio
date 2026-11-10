@@ -14,8 +14,7 @@ fn main() {
 /// lockfile 格式(v3/v4)该段是稳定的 `name = "..."` / `version = "..."`
 /// 平面键值对,无需完整 TOML 解析。
 fn lock_qppocr_version() -> Option<String> {
-    let lock = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").ok()?)
-        .join("Cargo.lock");
+    let lock = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").ok()?).join("Cargo.lock");
     let text = std::fs::read_to_string(lock).ok()?;
     let mut in_target = false;
     for line in text.lines() {

@@ -35,3 +35,7 @@ qppocr.png
 *.jpeg
 c++*.png
 sfz-rx.jpg
+
+# 本地模型源与历史安装包(勿入库)
+/models/
+/qpp-studio-*.exe

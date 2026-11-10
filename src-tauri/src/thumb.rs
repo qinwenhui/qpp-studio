@@ -13,8 +13,8 @@ pub fn make_thumb_from_rgb(
     thumbs_dir: &Path,
 ) -> Result<PathBuf, String> {
     let (tw, th, small) = downscale_box(w, h, rgb, 256);
-    let img = image::RgbImage::from_raw(tw, th, small)
-        .ok_or_else(|| "像素长度与尺寸不符".to_string())?;
+    let img =
+        image::RgbImage::from_raw(tw, th, small).ok_or_else(|| "像素长度与尺寸不符".to_string())?;
     std::fs::create_dir_all(thumbs_dir).map_err(|e| e.to_string())?;
     let out = thumbs_dir.join(format!("{id}.jpg"));
     let file = std::fs::File::create(&out).map_err(|e| e.to_string())?;
@@ -30,7 +30,7 @@ fn downscale_box(w: u32, h: u32, rgb: &[u8], max_side: u32) -> (u32, u32, Vec<u8
     if w == 0 || h == 0 || rgb.len() < (w as usize) * (h as usize) * 3 {
         return (1, 1, vec![0, 0, 0]);
     }
-    let step = ((w.max(h) + max_side - 1) / max_side).max(1);
+    let step = w.max(h).div_ceil(max_side).max(1);
     let tw = (w / step).max(1);
     let th = (h / step).max(1);
     let mut small = vec![0u8; (tw as usize) * (th as usize) * 3];

@@ -24,8 +24,7 @@ pub struct MonitorShot {
 }
 
 pub fn capture_all(app: &AppHandle, dir: &Path) -> Result<Vec<MonitorShot>, String> {
-    let monitors =
-        xcap::Monitor::all().map_err(|e| format!("枚举显示器失败: {e}"))?;
+    let monitors = xcap::Monitor::all().map_err(|e| format!("枚举显示器失败: {e}"))?;
     let state = app.state::<crate::AppCtx>();
     let mut shots = Vec::new();
     for (i, m) in monitors.iter().enumerate() {
@@ -35,12 +34,11 @@ pub fn capture_all(app: &AppHandle, dir: &Path) -> Result<Vec<MonitorShot>, Stri
         // 经 raw 缓冲转换，规避 xcap 与本工程 image 版本不一致的类型分裂
         let (w, h) = (cap.width(), cap.height());
         let raw = cap.into_raw();
-        let image = image::RgbaImage::from_raw(w, h, raw)
-            .ok_or_else(|| format!("显示器 {i} 截图为空"))?;
+        let image =
+            image::RgbaImage::from_raw(w, h, raw).ok_or_else(|| format!("显示器 {i} 截图为空"))?;
 
         let bmp = dir.join(format!("m{i}.bmp"));
-        let rgb = image::DynamicImage::ImageRgba8(image.clone())
-            .to_rgb8(); // RGBA→RGB:24 位 BMP(见模块注释)
+        let rgb = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8(); // RGBA→RGB:24 位 BMP(见模块注释)
         image::save_buffer_with_format(
             &bmp,
             rgb.as_raw(),

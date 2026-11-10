@@ -96,8 +96,14 @@ pub fn show_result_popup(app: &AppHandle, anchor: &PopupAnchor) {
         py = anchor.mon_y as f64 + margin;
     }
     // 最终夹回屏内
-    let px = px.clamp(anchor.mon_x as f64, (mon_right - ww).max(anchor.mon_x as f64));
-    let py = py.clamp(anchor.mon_y as f64, (mon_bottom - wh).max(anchor.mon_y as f64));
+    let px = px.clamp(
+        anchor.mon_x as f64,
+        (mon_right - ww).max(anchor.mon_x as f64),
+    );
+    let py = py.clamp(
+        anchor.mon_y as f64,
+        (mon_bottom - wh).max(anchor.mon_y as f64),
+    );
 
     let _ = win.set_position(tauri::PhysicalPosition::new(px as i32, py as i32));
     let _ = win.show();

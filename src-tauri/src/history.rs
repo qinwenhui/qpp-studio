@@ -3,11 +3,11 @@
 //! 可达数 MB),批量中途反复重写会烧掉可观的 CPU。
 //! 现在常规路径只追加新行;删除/清空/截断才整体重写一次。
 
-use crate::dto::{text_preview, HistoryEntryDto, OcrOutcomeDto};
+use crate::dto::{HistoryEntryDto, OcrOutcomeDto, text_preview};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Manager};
 
 const MAX_ENTRIES: usize = 200;
@@ -87,7 +87,12 @@ impl HistoryStore {
     }
 
     pub fn get(&self, id: &str) -> Option<HistoryEntryDto> {
-        self.inner.lock().unwrap().iter().find(|e| e.id == id).cloned()
+        self.inner
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|e| e.id == id)
+            .cloned()
     }
 
     pub fn flush_if_dirty(&self) {
@@ -148,10 +153,7 @@ fn write_atomic(path: &std::path::Path, content: String) {
 }
 
 /// 由识别结果构造历史条目。
-pub fn entry_from(
-    item: &crate::ingest::ImageItem,
-    outcome: &OcrOutcomeDto,
-) -> HistoryEntryDto {
+pub fn entry_from(item: &crate::ingest::ImageItem, outcome: &OcrOutcomeDto) -> HistoryEntryDto {
     let line_count = outcome
         .result
         .as_ref()
@@ -183,9 +185,11 @@ pub fn entry_from(
 
 /// 每 2 秒检查一次脏标记的落盘线程。
 pub fn spawn_flush_thread(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        let state = app.state::<crate::AppCtx>();
-        state.history.flush_if_dirty();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let state = app.state::<crate::AppCtx>();
+            state.history.flush_if_dirty();
+        }
     });
 }

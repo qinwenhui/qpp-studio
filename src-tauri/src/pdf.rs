@@ -13,7 +13,7 @@ use pdfium_render::prelude::*;
 
 /// PDF 渲染分辨率(统一用同一个 DPI,画布和 OCR 坐标天然对齐)
 pub const DPI_THUMB: u16 = 96;
-pub const DPI_VIEW: u16 = 200;  // 和 OCR 一致,框线不错位
+pub const DPI_VIEW: u16 = 200; // 和 OCR 一致,框线不错位
 pub const DPI_OCR: u16 = 200;
 
 lazy_static::lazy_static! {
@@ -31,21 +31,20 @@ fn bind_pdfium() -> Result<Box<dyn PdfiumLibraryBindings>, PdfiumError> {
         return Pdfium::bind_to_system_library();
     }
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            // dev:tauri 把 bundle resources 拷到 exe 同级
-            candidates.push(dir.join("libpdfium.dylib"));
-            // .app 安装态:exe 在 Contents/MacOS/,resources 在 Contents/Resources/
-            if let Some(contents) = dir.parent() {
-                candidates.push(contents.join("Resources/libpdfium.dylib"));
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        // dev:tauri 把 bundle resources 拷到 exe 同级
+        candidates.push(dir.join("libpdfium.dylib"));
+        // .app 安装态:exe 在 Contents/MacOS/,resources 在 Contents/Resources/
+        if let Some(contents) = dir.parent() {
+            candidates.push(contents.join("Resources/libpdfium.dylib"));
         }
     }
     if cfg!(debug_assertions) {
         // dev 兜底:仓库里的 models-bundle
-        candidates.push(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models-bundle/libpdfium.dylib"),
-        );
+        candidates
+            .push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models-bundle/libpdfium.dylib"));
     }
     for path in candidates {
         if !path.is_file() {
@@ -132,7 +131,7 @@ pub fn render_doc_page(
     // BGRA → RGB
     let bgra = bitmap.as_raw_bytes();
     let mut rgb = Vec::with_capacity((w * h * 3) as usize);
-    for px in bgra.chunks_exact(4) {
+    for px in bgra.as_chunks::<4>().0 {
         rgb.push(px[2]);
         rgb.push(px[1]);
         rgb.push(px[0]);
@@ -141,11 +140,7 @@ pub fn render_doc_page(
 }
 
 /// 渲染指定页(单次调用便捷入口 = 加载 + 渲染)。
-pub fn render_page(
-    bytes: &[u8],
-    page_index: u32,
-    dpi: u16,
-) -> Result<(u32, u32, Vec<u8>), String> {
+pub fn render_page(bytes: &[u8], page_index: u32, dpi: u16) -> Result<(u32, u32, Vec<u8>), String> {
     let doc = load_doc(bytes)?;
     render_doc_page(&doc, page_index, dpi)
 }
@@ -175,12 +170,12 @@ pub fn has_text_layer(bytes: &[u8]) -> bool {
     };
     let pages_to_check = doc.pages().len().min(3);
     for i in 0..pages_to_check {
-        if let Ok(page) = doc.pages().get(i) {
-            if let Ok(text) = page.text() {
-                let content = text.all();
-                if content.chars().filter(|c| !c.is_whitespace()).count() > 10 {
-                    return true;
-                }
+        if let Ok(page) = doc.pages().get(i)
+            && let Ok(text) = page.text()
+        {
+            let content = text.all();
+            if content.chars().filter(|c| !c.is_whitespace()).count() > 10 {
+                return true;
             }
         }
     }
@@ -192,14 +187,16 @@ pub fn read_pdf(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("读取 PDF 失败: {e}"))
 }
 
+/// PDF 文本层提取行:(文本, 置信度, 四点坐标) — 和 OCR TextLine 对齐。
+pub type ExtractedLine = (String, f32, [[f32; 2]; 4]);
+
 /// 从 PDF 文本层直接提取(跳过 OCR,毫秒级)。
-/// 返回 (text, confidence, [四点坐标]) — 和 OCR TextLine 对齐。
 /// 坐标为全宽近似框(精确定位需要字符矩阵,此处取可用性优先)。
 pub fn extract_text_lines(
     bytes: &[u8],
     page_index: u32,
     dpi: u16,
-) -> Result<Vec<(String, f32, [[f32; 2]; 4])>, String> {
+) -> Result<Vec<ExtractedLine>, String> {
     let doc = load_doc(bytes)?;
     extract_doc_text_lines(&doc, page_index, dpi)
 }
@@ -209,7 +206,7 @@ pub fn extract_doc_text_lines(
     doc: &PdfDocument<'_>,
     page_index: u32,
     dpi: u16,
-) -> Result<Vec<(String, f32, [[f32; 2]; 4])>, String> {
+) -> Result<Vec<ExtractedLine>, String> {
     let page = doc
         .pages()
         .get(page_index as i32)
@@ -218,9 +215,7 @@ pub fn extract_doc_text_lines(
     let page_w = page.width().value * dpi as f32 / 72.0;
     let page_h = page.height().value * dpi as f32 / 72.0;
 
-    let text = page
-        .text()
-        .map_err(|e| format!("文本提取失败: {e}"))?;
+    let text = page.text().map_err(|e| format!("文本提取失败: {e}"))?;
 
     let all = text.all();
     let mut lines = Vec::new();

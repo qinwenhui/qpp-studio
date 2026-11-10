@@ -70,8 +70,7 @@ const HEIC_HINT: &str = "此文件是 HEIC/HEIF 格式(苹果相机默认,扩展
 #[cfg(target_os = "macos")]
 fn heic_to_jpeg(path: &Path) -> Result<std::path::PathBuf, qppocr::Error> {
     use std::process::Command;
-    let out =
-        std::env::temp_dir().join(format!("qpp-heic-{}.jpg", uuid::Uuid::new_v4().simple()));
+    let out = std::env::temp_dir().join(format!("qpp-heic-{}.jpg", uuid::Uuid::new_v4().simple()));
     let st = Command::new("sips")
         .args(["-s", "format", "jpeg", "-s", "formatOptions", "95"])
         .arg(path)
@@ -139,9 +138,7 @@ pub fn decode_bytes_oriented(bytes: &[u8]) -> Result<DecodedImage, qppocr::Error
         let nw = ((w as f64 * s).round() as u32).max(1);
         let nh = ((h as f64 * s).round() as u32).max(1);
         let small = image::imageops::resize(&rgb, nw, nh, image::imageops::FilterType::Triangle);
-        eprintln!(
-            "[ocr] 超大图 {w}×{h} 降采样喂引擎 → {nw}×{nh}(框坐标已自动还原)"
-        );
+        eprintln!("[ocr] 超大图 {w}×{h} 降采样喂引擎 → {nw}×{nh}(框坐标已自动还原)");
         (w as f32 / nw as f32, h as f32 / nh as f32, small)
     } else {
         (1.0, 1.0, rgb)
@@ -157,7 +154,7 @@ pub fn decode_bytes_oriented(bytes: &[u8]) -> Result<DecodedImage, qppocr::Error
 /// 读 JPEG/PNG 的 EXIF Orientation(image 0.25 的 decoder API)。
 fn exif_orientation(bytes: &[u8]) -> Option<Orientation> {
     // with_guessed_format(self) -> io::Result<Self>:消费并返回 reader,再取 decoder
-    let mut reader = ImageReader::new(std::io::Cursor::new(bytes))
+    let reader = ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
     let mut decoder = reader.into_decoder().ok()?;
@@ -173,7 +170,7 @@ pub fn probe_dims_oriented(path: &Path) -> Result<(u32, u32), qppocr::Error> {
 
 /// 在已读字节上探测"显示方向"宽高(EXIF 5-8 需要交换宽高)。
 fn probe_dims_from_bytes(bytes: &[u8]) -> Result<(u32, u32), qppocr::Error> {
-    let mut reader = ImageReader::new(std::io::Cursor::new(bytes));
+    let reader = ImageReader::new(std::io::Cursor::new(bytes));
     let (w, h) = reader
         .with_guessed_format()
         .map_err(|e| qppocr::Error::Image(format!("读头部失败: {e}")))?
@@ -200,11 +197,15 @@ mod tests {
     fn oversize_downscales_and_rescales() {
         // 9000×4000 = 36MP > 32MP 上限
         let (w, h) = (9000u32, 4000u32);
-        let dyn_img =
-            image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 128]));
+        let dyn_img = image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        });
         let mut jpg = Vec::new();
         dyn_img
-            .write_to(&mut std::io::Cursor::new(&mut jpg), image::ImageFormat::Jpeg)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpg),
+                image::ImageFormat::Jpeg,
+            )
             .unwrap();
         let d = decode_bytes_oriented(&jpg).expect("解码失败");
         let fed = d.img.w as u64 * d.img.h as u64;
@@ -238,11 +239,7 @@ mod tests {
             return;
         }
         let mut head = [0u8; 12];
-        std::io::Read::read_exact(
-            &mut std::fs::File::open(&p).unwrap(),
-            &mut head,
-        )
-        .unwrap();
+        std::io::Read::read_exact(&mut std::fs::File::open(&p).unwrap(), &mut head).unwrap();
         assert!(is_heic(&head), "样本应为 HEIC");
         let msg = match decode_file_oriented(&p) {
             Ok(_) => panic!("HEIC 在本平台不该解码成功"),

@@ -4,13 +4,17 @@
 //! 与应用内快捷键走同一批处理函数;预定义项(退出/最小化/编辑组)由
 //! 系统/WKWebView 响应链自行处理,不需要事件。
 
-use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::Emitter;
+use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 
 pub fn setup(app: &tauri::App) -> tauri::Result<()> {
     // 应用菜单(第一个子菜单在 mac 上自动成为 App 菜单)
     let app_menu = SubmenuBuilder::new(app, "QPP Studio")
-        .item(&PredefinedMenuItem::about(app, Some("关于 QPP Studio"), None)?)
+        .item(&PredefinedMenuItem::about(
+            app,
+            Some("关于 QPP Studio"),
+            None,
+        )?)
         .separator()
         .item(
             &MenuItemBuilder::with_id("settings", "设置…")

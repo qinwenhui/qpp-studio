@@ -6,13 +6,13 @@ pub mod commands;
 pub mod dto;
 pub mod engine;
 pub mod history;
+pub mod hotkey;
 pub mod hw;
 pub mod image_util;
-pub mod hotkey;
 pub mod ingest;
+pub mod media;
 #[cfg(target_os = "macos")]
 pub mod menu;
-pub mod media;
 pub mod pdf;
 pub mod screenshot;
 pub mod selftest;
@@ -144,17 +144,16 @@ pub(crate) fn resolve_models_dir(app: &AppHandle, settings: &Settings) -> PathBu
     if let Ok(res) = app
         .path()
         .resolve("models", tauri::path::BaseDirectory::Resource)
+        && res.is_dir()
     {
-        if res.is_dir() {
-            return res;
-        }
+        return res;
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let p = dir.join("models");
-            if p.is_dir() {
-                return p;
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let p = dir.join("models");
+        if p.is_dir() {
+            return p;
         }
     }
     if cfg!(debug_assertions) {
@@ -167,10 +166,7 @@ pub(crate) fn resolve_models_dir(app: &AppHandle, settings: &Settings) -> PathBu
 }
 
 fn bootstrap(app: AppHandle) {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .expect("app_data 目录不可用");
+    let data_dir = app.path().app_data_dir().expect("app_data 目录不可用");
     let cache_dir = app.path().app_cache_dir().expect("app_cache 目录不可用");
     let (inbox, thumbs, shots) = (
         cache_dir.join("inbox"),
@@ -245,7 +241,11 @@ fn bootstrap(app: AppHandle) {
             p.workers,
             p.threads_each,
             p.inproc_concurrency,
-            if p.clamped_by_mem { "(内存闸压低)" } else { "" },
+            if p.clamped_by_mem {
+                "(内存闸压低)"
+            } else {
+                ""
+            },
         );
     }
 
@@ -268,10 +268,13 @@ fn bootstrap(app: AppHandle) {
     );
 
     if let Err(e) = hotkey::register(&app, &settings.hotkey) {
-        let _ = app.emit("app://toast", dto::ToastDto {
-            level: "error".into(),
-            message: e,
-        });
+        let _ = app.emit(
+            "app://toast",
+            dto::ToastDto {
+                level: "error".into(),
+                message: e,
+            },
+        );
     }
     windowfx::apply_theme_effect(&app, &settings.theme);
     ingest::spawn_pdf_queue(app.clone());
@@ -285,16 +288,13 @@ fn bootstrap(app: AppHandle) {
 /// - macOS:decorations + titleBarStyle Overlay——原生交通灯悬浮,
 ///   内容延伸到标题栏下(前端左区让位),窗口 transparent 走 macos-private-api
 fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
-    let builder = tauri::WebviewWindowBuilder::new(
-        app,
-        "main",
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("QPP Studio")
-    .inner_size(1280.0, 800.0)
-    .min_inner_size(960.0, 600.0)
-    .center()
-    .transparent(true);
+    let builder =
+        tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+            .title("QPP Studio")
+            .inner_size(1280.0, 800.0)
+            .min_inner_size(960.0, 600.0)
+            .center()
+            .transparent(true);
     // drag-drop 处理器默认启用(与原 tauri.conf.json 的 dragDropEnabled 一致)
 
     #[cfg(target_os = "macos")]

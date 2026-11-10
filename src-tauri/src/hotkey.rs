@@ -9,7 +9,13 @@ fn accel_for_platform(accel: &str) -> String {
     if cfg!(target_os = "macos") {
         accel
             .split('+')
-            .map(|t| if t == "ctrl" { "cmd".to_string() } else { t.to_string() })
+            .map(|t| {
+                if t == "ctrl" {
+                    "cmd".to_string()
+                } else {
+                    t.to_string()
+                }
+            })
             .collect::<Vec<_>>()
             .join("+")
     } else {

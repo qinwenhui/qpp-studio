@@ -90,7 +90,7 @@ pub fn detect() -> HwInfo {
     let physical = sys
         .physical_core_count()
         .filter(|&p| p > 0)
-        .unwrap_or((logical + 1) / 2);
+        .unwrap_or(logical.div_ceil(2));
     let cpu_brand = sys
         .cpus()
         .first()
@@ -127,7 +127,12 @@ pub fn plan_for(
     workers_override: usize,
     device: &qppocr::DeviceChoice,
 ) -> ParallelPlan {
-    plan_with(hw, tier, workers_override, matches!(device, qppocr::DeviceChoice::Gpu { .. }))
+    plan_with(
+        hw,
+        tier,
+        workers_override,
+        matches!(device, qppocr::DeviceChoice::Gpu { .. }),
+    )
 }
 
 /// 优化表本体:

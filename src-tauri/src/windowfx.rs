@@ -5,10 +5,11 @@
 //! - macOS:三套玻璃系主题给 NSVisualEffectView 材质(tauri set_effects
 //!   底层即 window-vibrancy);粉彩/纸墨不启用,靠不透明 CSS 背景遮住
 //!   (mac 端 set_effects(None) 无法移除已挂的材质视图,只能盖住)。
+//!
 //! 窗口 transparent 已开启(mac 走 tauri.conf.json 的 macOSPrivateApi)。
 
-use tauri::{AppHandle, Manager};
 use tauri::window::{Effect, EffectState, EffectsBuilder};
+use tauri::{AppHandle, Manager};
 
 pub fn apply_theme_effect(app: &AppHandle, theme: &str) {
     let Some(win) = app.get_webview_window("main") else {

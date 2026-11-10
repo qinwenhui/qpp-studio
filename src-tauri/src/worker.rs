@@ -14,7 +14,7 @@
 //! 父进程永不悬等。
 
 use crate::dto;
-use crate::engine::{build_engine, EngineSpec};
+use crate::engine::{EngineSpec, build_engine};
 use serde::Deserialize;
 use std::io::{BufRead, Write};
 use std::path::Path;
@@ -133,14 +133,20 @@ fn run_pdf_tasks(req: &WorkerRequest, pdf: &PdfSpec, engine: &qppocr::Engine) {
     let bytes = match std::fs::read(&pdf.path) {
         Ok(b) => b,
         Err(e) => {
-            respond_all(&req.tasks, dto::outcome_err(format!("worker 读 PDF 失败: {e}")));
+            respond_all(
+                &req.tasks,
+                dto::outcome_err(format!("worker 读 PDF 失败: {e}")),
+            );
             return;
         }
     };
     let doc = match crate::pdf::load_doc(&bytes) {
         Ok(d) => d,
         Err(e) => {
-            respond_all(&req.tasks, dto::outcome_err(format!("worker 加载 PDF 失败: {e}")));
+            respond_all(
+                &req.tasks,
+                dto::outcome_err(format!("worker 加载 PDF 失败: {e}")),
+            );
             return;
         }
     };
@@ -196,9 +202,7 @@ fn run_image_tasks(req: &WorkerRequest, engine: &qppocr::Engine) {
                     Ok(mut v) => {
                         // 超大图降采样过:框坐标回真原图
                         crate::image_util::DecodedImage::rescale_result(
-                            &mut v,
-                            d.scale_x,
-                            d.scale_y,
+                            &mut v, d.scale_x, d.scale_y,
                         );
                         Ok(v)
                     }

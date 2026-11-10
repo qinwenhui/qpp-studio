@@ -49,7 +49,9 @@ fn bench(app: AppHandle, dir: &str) {
     let state = app.state::<crate::AppCtx>();
     let spec = state.engine.spec();
     let models_dir = state.engine.models_dir();
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8);
     let workers_override = state.settings.read().unwrap().workers_override;
     let plan = crate::hw::plan_for(&state.hw, spec.tier, workers_override, &spec.device);
     blog!(
@@ -127,12 +129,14 @@ fn bench(app: AppHandle, dir: &str) {
             let eng = eng.clone();
             let queue = &queue;
             let b_errors = b_errors.clone();
-            s.spawn(move || loop {
-                let p = { queue.lock().unwrap().pop() };
-                let Some(p) = p else { return };
-                if let Err(e) = eng.run_image_file(&p) {
-                    b_errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    eprintln!("[bench] 进程内并发失败: {e}");
+            s.spawn(move || {
+                loop {
+                    let p = { queue.lock().unwrap().pop() };
+                    let Some(p) = p else { return };
+                    if let Err(e) = eng.run_image_file(&p) {
+                        b_errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        eprintln!("[bench] 进程内并发失败: {e}");
+                    }
                 }
             });
         }
@@ -183,8 +187,14 @@ fn bench(app: AppHandle, dir: &str) {
         }
     }
     let ingest_s = t0.elapsed().as_secs_f64();
-    state.batch.cancel.store(false, std::sync::atomic::Ordering::SeqCst);
-    state.batch.running.store(true, std::sync::atomic::Ordering::SeqCst);
+    state
+        .batch
+        .cancel
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    state
+        .batch
+        .running
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let t1 = Instant::now();
     crate::batch::spawn_proc_batch(app.clone(), e2e_tasks, plan);
     while state
@@ -205,7 +215,11 @@ fn bench(app: AppHandle, dir: &str) {
     blog!(
         "[bench] 进程内×{b_conc}       {conc4:>6.2}s  {:.1} 张/s{}",
         n as f64 / conc4,
-        if b_err > 0 { format!("  ⚠ 失败{b_err}张,数字不可信") } else { String::new() }
+        if b_err > 0 {
+            format!("  ⚠ 失败{b_err}张,数字不可信")
+        } else {
+            String::new()
+        }
     );
     blog!(
         "[bench] 进程×{k}(t={t_each})  {procs:>6.2}s  {:.1} 张/s  (最优 {:.2}s)",
@@ -262,7 +276,9 @@ fn bench_worker_chunk(
 
 /// 采样本进程之外同名进程(worker)的 RSS:返回 (单进程峰值, 合计峰值)。
 /// 用于校准 hw.rs 的单 worker 内存预算。
-fn spawn_rss_sampler(stop: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> (
+fn spawn_rss_sampler(
+    stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> (
     std::sync::Arc<std::sync::atomic::AtomicU64>,
     std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) {
@@ -298,8 +314,8 @@ fn spawn_rss_sampler(stop: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> (
 /// 用法:QPP_BENCH_PDF=<pdf路径> npm run tauri dev,输出到 qpp-bench.log。
 fn bench_pdf(app: AppHandle, pdf_path: &str) {
     use std::collections::BTreeMap;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     let _ = std::fs::remove_file(std::env::temp_dir().join("qpp-bench.log"));
     blog!("[bench-pdf] === QPP Studio PDF 并行基准 ===");
@@ -354,10 +370,10 @@ fn bench_pdf(app: AppHandle, pdf_path: &str) {
     };
     let doc = crate::pdf::load_doc(&bytes).expect("load_doc");
     // 热身 1 页
-    if let Ok((w, h, rgb)) = crate::pdf::render_doc_page(&doc, 0, crate::pdf::DPI_OCR) {
-        if let Ok(img) = qppocr::rgb_from_bytes(w, h, rgb) {
-            let _ = engine.run(&img);
-        }
+    if let Ok((w, h, rgb)) = crate::pdf::render_doc_page(&doc, 0, crate::pdf::DPI_OCR)
+        && let Ok(img) = qppocr::rgb_from_bytes(w, h, rgb)
+    {
+        let _ = engine.run(&img);
     }
     let t0 = Instant::now();
     for page in 0..pages {
@@ -377,7 +393,10 @@ fn bench_pdf(app: AppHandle, pdf_path: &str) {
     let mut peak_sum_final = 0u64;
     for round in 1..=2 {
         let id = format!("benchpdf-r{round}");
-        crate::ingest::PDF_STORE.lock().unwrap().insert(id.clone(), path.clone());
+        crate::ingest::PDF_STORE
+            .lock()
+            .unwrap()
+            .insert(id.clone(), path.clone());
         crate::ingest::PDF_PAGES.lock().unwrap().insert(
             id.clone(),
             crate::ingest::PdfMeta {
@@ -502,7 +521,9 @@ fn run(app: AppHandle) {
     };
     println!(
         "[selftest] ingest ok: id={} {}x{} token={}..{}",
-        dto.id, dto.w, dto.h,
+        dto.id,
+        dto.w,
+        dto.h,
         &dto.media_token[..6.min(dto.media_token.len())],
         &dto.thumb_token[..6.min(dto.thumb_token.len())]
     );
@@ -598,9 +619,12 @@ fn run(app: AppHandle) {
     // 6b) 用户真实路径:JPEG + add_files 命令的 invoke 返回通道(拖拽/打开共用)
     let jpg_path = state.dirs.cache.join("selftest-real.jpg");
     {
-        let dyn_img = image::DynamicImage::ImageRgb8(
-            image::imageops::resize(&img, 640, 360, image::imageops::FilterType::Triangle),
-        );
+        let dyn_img = image::DynamicImage::ImageRgb8(image::imageops::resize(
+            &img,
+            640,
+            360,
+            image::imageops::FilterType::Triangle,
+        ));
         let f = std::fs::File::create(&jpg_path).expect("写 jpg 失败");
         let mut w = std::io::BufWriter::new(f);
         let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut w, 90);
@@ -615,7 +639,11 @@ fn run(app: AppHandle) {
     println!(
         "[selftest] add_files 通道: media hits +{}(经 invoke 返回的条目{}加载了图片)",
         state.media.hits() - hits_before_cmd,
-        if state.media.hits() > hits_before_cmd { "" } else { "未" }
+        if state.media.hits() > hits_before_cmd {
+            ""
+        } else {
+            "未"
+        }
     );
 
     // 7) 历史
@@ -633,9 +661,17 @@ fn run(app: AppHandle) {
                     Ok(n) => blog!("[selftest] PDF 页数: {}", n),
                     Err(e) => blog!("[selftest] PDF 页数失败: {}", e),
                 }
-                blog!("[selftest] PDF 文本层: {}", crate::pdf::has_text_layer(&bytes));
+                blog!(
+                    "[selftest] PDF 文本层: {}",
+                    crate::pdf::has_text_layer(&bytes)
+                );
                 match crate::pdf::render_page(&bytes, 0, crate::pdf::DPI_OCR) {
-                    Ok((w, h, rgb)) => blog!("[selftest] PDF 首页渲染: {}x{} ({}KB)", w, h, rgb.len() / 1024),
+                    Ok((w, h, rgb)) => blog!(
+                        "[selftest] PDF 首页渲染: {}x{} ({}KB)",
+                        w,
+                        h,
+                        rgb.len() / 1024
+                    ),
                     Err(e) => blog!("[selftest] PDF 渲染失败: {}", e),
                 }
             }

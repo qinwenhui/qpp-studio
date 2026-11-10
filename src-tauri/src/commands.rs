@@ -1,11 +1,11 @@
 //! 全部 Tauri 命令。自定义命令不受 ACL 约束（插件/core 命令才走 capabilities）。
 
+use crate::AppCtx;
+use crate::dto;
 use crate::dto::{
     EngineStatusDto, ImageItemDto, InitInfoDto, ItemOutcomeDto, OcrOutcomeDto, ShotMonitorDto,
 };
-use crate::dto;
-use crate::settings::{parse_device, parse_preset, parse_tier, Settings};
-use crate::AppCtx;
+use crate::settings::{Settings, parse_device, parse_preset, parse_tier};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -121,9 +121,7 @@ async fn ingest_paths(app: &AppHandle, paths: Vec<PathBuf>) -> Result<Vec<ImageI
             std::sync::Mutex::new(Vec::new());
         let first_err = std::sync::Mutex::new(None::<String>);
         let done = AtomicUsize::new(0);
-        let is_stale = |g: u64| {
-            app.state::<AppCtx>().ingest_gen.load(Ordering::SeqCst) != g
-        };
+        let is_stale = |g: u64| app.state::<AppCtx>().ingest_gen.load(Ordering::SeqCst) != g;
 
         std::thread::scope(|scope| {
             for _ in 0..4 {
@@ -159,10 +157,10 @@ async fn ingest_paths(app: &AppHandle, paths: Vec<PathBuf>) -> Result<Vec<ImageI
         let mut out = results.into_inner().unwrap();
         out.sort_by_key(|(idx, _)| *idx);
         let out: Vec<ImageItemDto> = out.into_iter().map(|(_, d)| d).collect();
-        if out.is_empty() {
-            if let Some(e) = first_err.into_inner().unwrap() {
-                return Err(e);
-            }
+        if out.is_empty()
+            && let Some(e) = first_err.into_inner().unwrap()
+        {
+            return Err(e);
         }
         Ok(out)
     })
@@ -191,7 +189,7 @@ pub async fn ocr_image(
 ) -> Result<OcrOutcomeDto, String> {
     let rotation = rotation.unwrap_or(0);
     tauri::async_runtime::spawn_blocking(move || {
-        if rotation % 360 == 0 {
+        if rotation.is_multiple_of(360) {
             crate::batch::run_item_blocking(&app, &id)
         } else {
             crate::batch::run_item_rotated_blocking(&app, &id, rotation)
@@ -225,7 +223,11 @@ pub async fn batch_start(
         let items = state.items.read().unwrap();
         for id in &ids {
             if let Some(item) = items.get(id) {
-                tasks.push((id.clone(), item.path.clone(), (item.w as u64) * (item.h as u64)));
+                tasks.push((
+                    id.clone(),
+                    item.path.clone(),
+                    (item.w as u64) * (item.h as u64),
+                ));
             }
         }
     }
@@ -250,7 +252,11 @@ pub async fn batch_start(
 
     // 小批量:进程内共享引擎并发(并发 run 在算子层部分重叠)
     let user_conc = state.settings.read().unwrap().batch_concurrency;
-    let conc = if user_conc == 0 { plan.inproc_concurrency } else { user_conc };
+    let conc = if user_conc == 0 {
+        plan.inproc_concurrency
+    } else {
+        user_conc
+    };
     let sem = Arc::new(tokio::sync::Semaphore::new(conc.max(1)));
     *state.batch.semaphore.write().unwrap() = sem.clone();
     let cancel = state.batch.cancel.clone();
@@ -285,7 +291,10 @@ pub async fn batch_start(
 
 #[tauri::command]
 pub fn batch_cancel(state: State<AppCtx>) {
-    state.batch.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    state
+        .batch
+        .cancel
+        .store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 // ---- 截图 ----
@@ -451,10 +460,15 @@ pub async fn settings_set(
         };
         state.engine.reconfigure(app.clone(), spec);
     }
-    if conc_changed && !state.batch.running.load(std::sync::atomic::Ordering::SeqCst) {
-        *state.batch.semaphore.write().unwrap() = std::sync::Arc::new(
-            tokio::sync::Semaphore::new(settings.batch_concurrency.max(1)),
-        );
+    if conc_changed
+        && !state
+            .batch
+            .running
+            .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        *state.batch.semaphore.write().unwrap() = std::sync::Arc::new(tokio::sync::Semaphore::new(
+            settings.batch_concurrency.max(1),
+        ));
     }
     let _ = app.emit("settings://changed", &settings);
     Ok(settings)
@@ -543,7 +557,9 @@ pub async fn history_reopen(app: AppHandle, id: String) -> Result<ItemOutcomeDto
                 &state.dirs.thumbs,
             )?;
         }
-        let media_token = state.media.register(path.clone(), crate::media::mime_for(&path));
+        let media_token = state
+            .media
+            .register(path.clone(), crate::media::mime_for(&path));
         let thumb_token = state.media.register(thumb, "image/jpeg");
         let item = crate::ingest::ImageItem {
             id: entry.id.clone(),
@@ -701,8 +717,7 @@ pub fn pdf_pause(app: AppHandle, id: String) -> Option<u32> {
 /// 返回是否真的有活干——false 时前端应直接落定「已完成」,别乐观等待事件。
 #[tauri::command]
 pub fn pdf_resume(app: AppHandle, state: State<AppCtx>, id: String) -> Result<bool, String> {
-    let (total, pages) =
-        crate::ingest::remaining_pages(&id).ok_or("PDF 条目不存在")?;
+    let (total, pages) = crate::ingest::remaining_pages(&id).ok_or("PDF 条目不存在")?;
     if pages.is_empty() {
         return Ok(false);
     }
@@ -854,16 +869,25 @@ pub async fn pdf_render_page(
         };
         let recognized = page_outcome.is_some();
         if let Some(outcome) = page_outcome {
-            let _ = app2.emit("ocr://item-done", crate::dto::ItemDoneDto {
-                id: id2.clone(),
-                outcome,
-                thumb_token: None,
-                pdf_page: Some(page),
-            });
+            let _ = app2.emit(
+                "ocr://item-done",
+                crate::dto::ItemDoneDto {
+                    id: id2.clone(),
+                    outcome,
+                    thumb_token: None,
+                    pdf_page: Some(page),
+                },
+            );
         }
         // 预取下一页:翻页方向上的下一击就是缓存命中
         prefetch_view_page(&app2, &id2, page + 1);
-        Ok(crate::dto::PdfPageDto { media_token: token2, w, h, page, recognized })
+        Ok(crate::dto::PdfPageDto {
+            media_token: token2,
+            w,
+            h,
+            page,
+            recognized,
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -930,13 +954,14 @@ pub async fn pdf_ocr_range(
             } else {
                 continue;
             }
-            let media_token = state.media.register(png_path.clone(), "image/png");
+            let _media_token = state.media.register(png_path.clone(), "image/png");
             let display_name = format!("{} · 第{}页", parent_name, page + 1);
 
             // 缩略图
-            let thumb_path = crate::thumb::make_thumb_from_rgb(w, h, &img.data, &pid, &state.dirs.thumbs)
-                .unwrap_or_default();
-            let thumb_token = if thumb_path.as_os_str().len() > 0 {
+            let thumb_path =
+                crate::thumb::make_thumb_from_rgb(w, h, &img.data, &pid, &state.dirs.thumbs)
+                    .unwrap_or_default();
+            let thumb_token = if !thumb_path.as_os_str().is_empty() {
                 state.media.register(thumb_path, "image/jpeg")
             } else {
                 String::new()
@@ -964,20 +989,26 @@ pub async fn pdf_ocr_range(
 
         // 进批量队列
         if !ids.is_empty() {
-            let _ = tauri::async_runtime::block_on(async {
+            tauri::async_runtime::block_on(async {
                 // 直接调 batch 逻辑:设置状态,逐条识别
                 for pid in &ids {
-                    let _ = app2.emit("ocr://item-status", crate::dto::ItemStatusDto {
-                        id: pid.clone(),
-                        phase: "queued".into(),
-                    });
+                    let _ = app2.emit(
+                        "ocr://item-status",
+                        crate::dto::ItemStatusDto {
+                            id: pid.clone(),
+                            phase: "queued".into(),
+                        },
+                    );
                 }
                 // 复用 run_item_blocking
                 for pid in &ids {
-                    let _ = app2.emit("ocr://item-status", crate::dto::ItemStatusDto {
-                        id: pid.clone(),
-                        phase: "running".into(),
-                    });
+                    let _ = app2.emit(
+                        "ocr://item-status",
+                        crate::dto::ItemStatusDto {
+                            id: pid.clone(),
+                            phase: "running".into(),
+                        },
+                    );
                     let _ = crate::batch::run_item_blocking(&app2, pid);
                 }
                 let _ = app2.emit("batch://done", ());
@@ -987,7 +1018,6 @@ pub async fn pdf_ocr_range(
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(|e| e)
 }
 
 /// 行的「字面尺寸」:优先逐字盒短边中位数(真实字面大小,与纸张视图
@@ -1036,7 +1066,11 @@ fn lines_to_markdown(lines: &[crate::dto::TextLineDto], base_level: usize) -> St
     let mut hs: Vec<f32> = metrics.iter().map(|(h, _)| *h).collect();
     hs.sort_by(|a, b| a.partial_cmp(b).unwrap());
     // 下中位:标题行总是更大,上中位会被标题污染(6 行含 3 标题时基准漂到 H3)
-    let body = hs.get(hs.len().saturating_sub(1) / 2).copied().unwrap_or(1.0).max(1.0);
+    let body = hs
+        .get(hs.len().saturating_sub(1) / 2)
+        .copied()
+        .unwrap_or(1.0)
+        .max(1.0);
 
     let mut out = String::new();
     let mut prev: Option<(f32, f32)> = None; // (中心y, 字面尺寸)
@@ -1179,8 +1213,7 @@ pub async fn device_benchmark(app: AppHandle) -> Result<crate::dto::DeviceBenchD
                 }
             }
         }
-        let image =
-            qppocr::rgb_from_bytes(w, h, img.into_raw()).map_err(|e| e.to_string())?;
+        let image = qppocr::rgb_from_bytes(w, h, img.into_raw()).map_err(|e| e.to_string())?;
 
         let run_side = |device: qppocr::DeviceChoice| -> Result<(f64, u32), String> {
             let mut s = spec.clone();
@@ -1260,13 +1293,12 @@ pub async fn pdf_extract_all(
             let lines = crate::pdf::extract_text_lines(&bytes, page, crate::pdf::DPI_VIEW)
                 .unwrap_or_default();
 
-            let text: Vec<String> = lines
-                .iter()
-                .map(|(t, _, _)| t.clone())
-                .collect();
+            let text: Vec<String> = lines.iter().map(|(t, _, _)| t.clone()).collect();
 
-            let full_text = text.join("
-");
+            let full_text = text.join(
+                "
+",
+            );
             results.push(crate::dto::PdfExtractedPageDto {
                 page: page + 1,
                 text: full_text,
@@ -1275,7 +1307,7 @@ pub async fn pdf_extract_all(
         }
 
         // 同时写入识别记录(每页一个条目,和 OCR 批量结果一致)
-        for (page_idx, result) in results.iter().enumerate() {
+        for (page_idx, _result) in results.iter().enumerate() {
             let pid = uuid::Uuid::new_v4().simple().to_string();
             let display_name = format!("{} · 第{}页(直提)", parent_name, page_idx + 1);
 
@@ -1289,29 +1321,26 @@ pub async fn pdf_extract_all(
                     Err(_) => std::path::PathBuf::new(),
                 }
             };
-            let thumb_token = if thumb_path.as_os_str().len() > 0 {
+            let thumb_token = if !thumb_path.as_os_str().is_empty() {
                 state.media.register(thumb_path, "image/jpeg")
             } else {
                 String::new()
             };
 
             // 构造 OcrResultDto(置信度全部 1.0,无 timings)
-            let text_lines: Vec<crate::dto::TextLineDto> = crate::pdf::extract_text_lines(
-                &bytes,
-                page_idx as u32,
-                crate::pdf::DPI_VIEW,
-            )
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(t, c, pts)| crate::dto::TextLineDto {
-                text: t,
-                confidence: c,
-                rotation: 0,
-                pts,
-                chars: vec![],
-                retried: false,
-            })
-            .collect();
+            let text_lines: Vec<crate::dto::TextLineDto> =
+                crate::pdf::extract_text_lines(&bytes, page_idx as u32, crate::pdf::DPI_VIEW)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(t, c, pts)| crate::dto::TextLineDto {
+                        text: t,
+                        confidence: c,
+                        rotation: 0,
+                        pts,
+                        chars: vec![],
+                        retried: false,
+                    })
+                    .collect();
 
             let outcome = crate::dto::OcrOutcomeDto {
                 ok: true,
@@ -1328,16 +1357,24 @@ pub async fn pdf_extract_all(
                     num_unread: 0,
                     extracted: true,
                     timings: crate::dto::TimingsDto {
-                        det_pre_ms: 0.0, det_infer_ms: 0.0, det_post_ms: 0.0,
-                        crop_ms: 0.0, cls_ms: 0.0, rec_pre_ms: 0.0, rec_infer_ms: 0.0,
-                        rec_post_ms: 0.0, total_ms: 0.0,
+                        det_pre_ms: 0.0,
+                        det_infer_ms: 0.0,
+                        det_post_ms: 0.0,
+                        crop_ms: 0.0,
+                        cls_ms: 0.0,
+                        rec_pre_ms: 0.0,
+                        rec_infer_ms: 0.0,
+                        rec_post_ms: 0.0,
+                        total_ms: 0.0,
                     },
                 }),
             };
 
             // 渲染全尺寸图供画布显示
             let (vw, vh, _vrgb) = crate::pdf::render_page(
-                &bytes, page_idx as u32, crate::pdf::DPI_VIEW,
+                &bytes,
+                page_idx as u32,
+                crate::pdf::DPI_VIEW,
             )
             .unwrap_or((0, 0, vec![]));
 
@@ -1368,7 +1405,6 @@ pub async fn pdf_extract_all(
     .map_err(|e: String| e)
 }
 
-
 #[cfg(test)]
 mod md_tests {
     use super::*;
@@ -1382,12 +1418,7 @@ mod md_tests {
             confidence: 1.0,
             rotation: 0,
             retried: false,
-            pts: [
-                [0.0, y],
-                [w, y],
-                [w, y + char_h],
-                [0.0, y + char_h],
-            ],
+            pts: [[0.0, y], [w, y], [w, y + char_h], [0.0, y + char_h]],
             chars: text
                 .chars()
                 .enumerate()
@@ -1410,7 +1441,7 @@ mod md_tests {
         let lines = vec![
             line("正文第一行", 20.0, 0.0),
             line("正文第二行", 20.0, 26.0),
-            line("小节标题", 24.0, 90.0),   // 与上行净间隙 90-26-22=42 > 0.75*20=15 → 分段
+            line("小节标题", 24.0, 90.0), // 与上行净间隙 90-26-22=42 > 0.75*20=15 → 分段
             line("二级标题", 30.0, 124.0),
             line("大标题", 40.0, 160.0),
             line("正文第三行", 20.0, 300.0), // 大段间隙 → 分段

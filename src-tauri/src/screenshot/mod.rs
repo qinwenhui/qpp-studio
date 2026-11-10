@@ -33,15 +33,16 @@ fn begin_sync(app: AppHandle) {
     // 这里只执行(设置里 shot_hide=true 时隐藏)。窗口已不可见则跳过。
     let hide_main = maybe_hide_main(&app);
     let state = app.state::<crate::AppCtx>();
-    let dir = state.dirs.shots.join(uuid::Uuid::new_v4().simple().to_string());
+    let dir = state
+        .dirs
+        .shots
+        .join(uuid::Uuid::new_v4().simple().to_string());
 
     // 错误路径也要恢复主窗口:否则截图失败后窗口永久消失,只能重启应用。
     // 成功路径由 finish/cancel 负责恢复。
     let cleanup = || {
-        if hide_main {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-            }
+        if hide_main && let Some(w) = app.get_webview_window("main") {
+            let _ = w.show();
         }
     };
 
@@ -71,7 +72,12 @@ fn begin_sync(app: AppHandle) {
         }
     };
 
-    *state.shot.lock().unwrap() = Some(Session { shots, labels, dir, hide_main });
+    *state.shot.lock().unwrap() = Some(Session {
+        shots,
+        labels,
+        dir,
+        hide_main,
+    });
     let _ = app.emit("shot://began", ());
 }
 
@@ -86,10 +92,10 @@ pub fn finish(app: AppHandle, mon: u32, x: i32, y: i32, w: i32, h: i32) -> Resul
         .take()
         .ok_or("没有进行中的截图会话")?;
     overlay::close_windows(&app, &session.labels);
-    if session.hide_main {
-        if let Some(w) = app.get_webview_window("main") {
-            let _ = w.show();
-        }
+    if session.hide_main
+        && let Some(w) = app.get_webview_window("main")
+    {
+        let _ = w.show();
     }
 
     let m = session
@@ -106,8 +112,8 @@ pub fn finish(app: AppHandle, mon: u32, x: i32, y: i32, w: i32, h: i32) -> Resul
     let w = w.min(m.w as i32 - x).max(4);
     let h = h.min(m.h as i32 - y).max(4);
 
-    let crop = image::imageops::crop_imm(&m.image, x as u32, y as u32, w as u32, h as u32)
-        .to_image();
+    let crop =
+        image::imageops::crop_imm(&m.image, x as u32, y as u32, w as u32, h as u32).to_image();
 
     // 弹窗锚点：选区右下角（全局物理坐标）+ 所在屏幕范围，用于摆放结果小窗
     let anchor = overlay::PopupAnchor {
@@ -164,10 +170,10 @@ pub fn cancel(app: &AppHandle) {
     let state = app.state::<crate::AppCtx>();
     if let Some(session) = state.shot.lock().unwrap().take() {
         overlay::close_windows(app, &session.labels);
-        if session.hide_main {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-            }
+        if session.hide_main
+            && let Some(w) = app.get_webview_window("main")
+        {
+            let _ = w.show();
         }
         let _ = std::fs::remove_dir_all(&session.dir);
         let _ = app.emit("shot://cancelled", ());
@@ -175,10 +181,13 @@ pub fn cancel(app: &AppHandle) {
 }
 
 fn emit_error(app: &AppHandle, msg: &str) {
-    let _ = app.emit("app://toast", crate::dto::ToastDto {
-        level: "error".into(),
-        message: msg.into(),
-    });
+    let _ = app.emit(
+        "app://toast",
+        crate::dto::ToastDto {
+            level: "error".into(),
+            message: msg.into(),
+        },
+    );
 }
 
 /// 按设置隐藏主窗口(shot_hide=true 且窗口当前可见)。

@@ -8,7 +8,7 @@
 //! 前端 `mediaUrl()` 负责分支，CSP 两种写法都放行。
 
 use std::{borrow::Cow, collections::HashMap, path::PathBuf, sync::Mutex};
-use tauri::{http, Manager, Runtime, UriSchemeContext, UriSchemeResponder};
+use tauri::{Manager, Runtime, UriSchemeContext, UriSchemeResponder, http};
 
 #[derive(Clone)]
 pub struct MediaEntry {
@@ -25,8 +25,7 @@ pub struct MediaRegistry {
 
 impl MediaRegistry {
     pub fn hits(&self) -> usize {
-        self.hit_count
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.hit_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -74,7 +73,10 @@ pub fn handle<R: Runtime>(
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 http::Response::builder()
                     .header(http::header::CONTENT_TYPE, entry.mime)
-                    .header(http::header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                    .header(
+                        http::header::CACHE_CONTROL,
+                        "public, max-age=31536000, immutable",
+                    )
                     .body(Cow::Owned(bytes))
                     .unwrap()
             }

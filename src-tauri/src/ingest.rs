@@ -105,8 +105,8 @@ pub fn cleanup_pdf(state: &crate::AppCtx, id: &str) {
         for e in rd.flatten() {
             let name = e.file_name();
             let name = name.to_string_lossy();
-            let is_page_cache = name.starts_with(&prefix)
-                && (name.ends_with(".png") || name.ends_with(".jpg"));
+            let is_page_cache =
+                name.starts_with(&prefix) && (name.ends_with(".png") || name.ends_with(".jpg"));
             if is_page_cache {
                 let _ = std::fs::remove_file(e.path());
             }
@@ -132,11 +132,7 @@ pub fn pause_pdf(app: &AppHandle, id: &str) -> Option<u32> {
     let state = app.state::<crate::AppCtx>();
     state.pdf.pause.store(true, Ordering::SeqCst);
     state.pdf.queue.lock().unwrap().retain(|j| j.id != id);
-    let done = PDF_RESULTS
-        .lock()
-        .unwrap()
-        .get(id)
-        .map(|m| m.len() as u32);
+    let done = PDF_RESULTS.lock().unwrap().get(id).map(|m| m.len() as u32);
     let _ = app;
     done
 }
@@ -147,7 +143,7 @@ pub fn remaining_pages(id: &str) -> Option<(u32, Vec<u32>)> {
     let results = PDF_RESULTS.lock().unwrap();
     let done = results.get(id);
     let pages = (0..meta.count)
-        .filter(|p| done.map_or(true, |m| !m.contains_key(p)))
+        .filter(|p| done.is_none_or(|m| !m.contains_key(p)))
         .collect();
     Some((meta.count, pages))
 }
@@ -169,7 +165,7 @@ pub fn recognize_page_force_ocr(app: &AppHandle, id: &str, page: u32) {
 fn push_ondemand(app: &AppHandle, id: &str, page: u32, force_ocr: bool) {
     if !force_ocr {
         let results = PDF_RESULTS.lock().unwrap();
-        if results.get(id).map_or(false, |m| m.contains_key(&page)) {
+        if results.get(id).is_some_and(|m| m.contains_key(&page)) {
             return; // 已有结果
         }
     }
@@ -198,7 +194,10 @@ pub fn set_pdf_mode(app: &AppHandle, id: &str, extract: bool) -> Result<bool, St
     // 混合文档(前几页扫描、正文有文本层)也能整册切直提;
     // 纯扫描件切直提 = 全册回退,效果等同 OCR 模式
     // 清结果 + 改模式 + 作废队列中同 id 旧任务 → 全册重跑
-    PDF_RESULTS.lock().unwrap().insert(id.to_string(), BTreeMap::new());
+    PDF_RESULTS
+        .lock()
+        .unwrap()
+        .insert(id.to_string(), BTreeMap::new());
     PDF_PAGES.lock().unwrap().get_mut(id).unwrap().extract = extract;
     state.pdf.queue.lock().unwrap().retain(|j| j.id != id);
     let name = state
@@ -254,8 +253,7 @@ fn ocr_doc_page(
         .and_then(|(w, h, rgb)| qppocr::rgb_from_bytes(w, h, rgb).map_err(|e| e.to_string()))
     {
         Ok(img) => {
-            let r =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.run(&img)));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.run(&img)));
             crate::dto::outcome_from(match r {
                 Ok(Ok(v)) => Ok(v),
                 Ok(Err(e)) => Err(e),
@@ -310,7 +308,7 @@ pub fn spawn_ondemand_worker(app: AppHandle) {
             // 已有结果(可能被舰队补齐)/条目已删 → 跳过;强制 OCR 例外
             if !force_ocr {
                 let results = PDF_RESULTS.lock().unwrap();
-                if results.get(&id).map_or(true, |m| m.contains_key(&page)) {
+                if results.get(&id).is_none_or(|m| m.contains_key(&page)) {
                     continue;
                 }
             }
@@ -368,23 +366,30 @@ pub fn spawn_ondemand_worker(app: AppHandle) {
 
 /// 长驻队列线程:空闲挂起(Condvar 零空转),逐本处理;图片批量优先,让路等待。
 pub fn spawn_pdf_queue(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        // 等队列非空
-        let job = {
-            let state = app.state::<crate::AppCtx>();
-            let mut q = state.pdf.queue.lock().unwrap();
-            loop {
-                if let Some(job) = q.pop_front() {
-                    break job;
+    std::thread::spawn(move || {
+        loop {
+            // 等队列非空
+            let job = {
+                let state = app.state::<crate::AppCtx>();
+                let mut q = state.pdf.queue.lock().unwrap();
+                loop {
+                    if let Some(job) = q.pop_front() {
+                        break job;
+                    }
+                    q = state.pdf.cv.wait(q).unwrap();
                 }
-                q = state.pdf.cv.wait(q).unwrap();
+            };
+            // 图片批量优先:等它跑完再开舰队(共用 worker 预算)
+            while app
+                .state::<crate::AppCtx>()
+                .batch
+                .running
+                .load(Ordering::SeqCst)
+            {
+                std::thread::sleep(std::time::Duration::from_millis(150));
             }
-        };
-        // 图片批量优先:等它跑完再开舰队(共用 worker 预算)
-        while app.state::<crate::AppCtx>().batch.running.load(Ordering::SeqCst) {
-            std::thread::sleep(std::time::Duration::from_millis(150));
+            run_pdf_job(&app, job);
         }
-        run_pdf_job(&app, job);
     });
 }
 
@@ -424,8 +429,7 @@ fn run_pdf_job(app: &AppHandle, job: PdfOcrJob) {
     let plan = crate::hw::plan_for(&state.hw, spec.tier, workers_override, &spec.device);
     // 自测/基准:强制小文档也走舰队路径
     let force = std::env::var("QPP_PDF_FLEET_FORCE").is_ok();
-    let use_fleet =
-        plan.workers > 0 && (job.pages.len() >= PDF_FLEET_MIN || force);
+    let use_fleet = plan.workers > 0 && (job.pages.len() >= PDF_FLEET_MIN || force);
 
     if use_fleet {
         // 先立旗再查 running,与 batch_start 的先 swap 再查 fleet_active 对称,无竞态窗口
@@ -557,14 +561,20 @@ pub(crate) fn run_pdf_fleet(app: &AppHandle, job: &PdfOcrJob, plan: &crate::hw::
         })
         .collect();
 
-    crate::batch::run_fleet(req_base, Some(pdf_spec), items, k, cancel.clone(), pause, &sink);
+    crate::batch::run_fleet(
+        req_base,
+        Some(pdf_spec),
+        items,
+        k,
+        cancel.clone(),
+        pause,
+        &sink,
+    );
 }
 
 /// 文本层行集 → OCR 同构结果(行框全宽近似,置信度 1.0)。
 /// 串行直提与按需单页共用。
-fn extract_lines_to_outcome(
-    lines: Vec<(String, f32, [[f32; 2]; 4])>,
-) -> OcrOutcomeDto {
+fn extract_lines_to_outcome(lines: Vec<(String, f32, [[f32; 2]; 4])>) -> OcrOutcomeDto {
     let line_dtos = lines
         .iter()
         .map(|(text, conf, pts)| crate::dto::TextLineDto {
@@ -619,9 +629,7 @@ fn serial_pdf_extract(app: &AppHandle, job: &PdfOcrJob) {
         Err(_) => return,
     };
     for &page in &job.pages {
-        if state.batch.cancel.load(Ordering::Relaxed)
-            || state.pdf.pause.load(Ordering::Relaxed)
-        {
+        if state.batch.cancel.load(Ordering::Relaxed) || state.pdf.pause.load(Ordering::Relaxed) {
             break;
         }
         if !PDF_PAGES.lock().unwrap().contains_key(&job.id) {
@@ -683,22 +691,17 @@ fn serial_pdf_ocr(app: &AppHandle, job: &PdfOcrJob) {
     };
 
     for &page in &job.pages {
-        if state.batch.cancel.load(Ordering::Relaxed)
-            || state.pdf.pause.load(Ordering::Relaxed)
-        {
+        if state.batch.cancel.load(Ordering::Relaxed) || state.pdf.pause.load(Ordering::Relaxed) {
             break; // 取消/暂停:静默中断,缺失页留给 resume
         }
         if !PDF_PAGES.lock().unwrap().contains_key(&job.id) {
             break; // 条目已删
         }
         let outcome = match crate::pdf::render_doc_page(&doc, page, crate::pdf::DPI_OCR)
-            .and_then(|(w, h, rgb)| {
-                qppocr::rgb_from_bytes(w, h, rgb).map_err(|e| e.to_string())
-            }) {
+            .and_then(|(w, h, rgb)| qppocr::rgb_from_bytes(w, h, rgb).map_err(|e| e.to_string()))
+        {
             Ok(img) => {
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    engine.run(&img)
-                }));
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.run(&img)));
                 crate::dto::outcome_from(match r {
                     Ok(Ok(v)) => Ok(v),
                     Ok(Err(e)) => Err(e),
@@ -754,8 +757,7 @@ fn render_pdf_page_to_item(
     let state = app.state::<crate::AppCtx>();
     let (w, h, rgb) = crate::pdf::render_page(bytes, page, crate::pdf::DPI_VIEW)?;
     let png_path = state.dirs.inbox.join(format!("{item_id}_p{page}.png"));
-    let img = image::RgbImage::from_raw(w, h, rgb)
-        .ok_or("渲染数据无效")?;
+    let img = image::RgbImage::from_raw(w, h, rgb).ok_or("渲染数据无效")?;
     img.save_with_format(&png_path, image::ImageFormat::Png)
         .map_err(|e| format!("保存页面失败: {e}"))?;
     let media_token = state.media.register(png_path.clone(), "image/png");
@@ -767,8 +769,12 @@ fn render_pdf_page_to_item(
             if let Some(ti) = image::RgbImage::from_raw(tw, th, trgb) {
                 if ti.save_with_format(&tp, image::ImageFormat::Jpeg).is_ok() {
                     state.media.register(tp, "image/jpeg")
-                } else { String::new() }
-            } else { String::new() }
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
         }
         Err(_) => String::new(),
     };
@@ -784,7 +790,8 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
     }
 
     let state = app.state::<crate::AppCtx>();
-    let is_pdf = path.extension()
+    let is_pdf = path
+        .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.eq_ignore_ascii_case("pdf"))
         .unwrap_or(false);
@@ -799,7 +806,8 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
             return Err("PDF 没有任何页面".into());
         }
         let can_extract = crate::pdf::has_text_layer(&bytes);
-        let file_name = path.file_name()
+        let file_name = path
+            .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "PDF".into());
         let weights: Vec<u64> = sizes
@@ -810,7 +818,10 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
         // 存元信息(源只存路径——几百 MB 的 PDF 字节常驻内存不可接受)。
         // 文本层 PDF 恒为自动模式:直提毫秒级完成,按需无意义
         let on_demand = !can_extract && count > PDF_AUTO_OCR_MAX;
-        PDF_STORE.lock().unwrap().insert(id.clone(), path.to_path_buf());
+        PDF_STORE
+            .lock()
+            .unwrap()
+            .insert(id.clone(), path.to_path_buf());
         PDF_PAGES.lock().unwrap().insert(
             id.clone(),
             PdfMeta {
@@ -820,7 +831,10 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
                 weights: weights.clone(),
             },
         );
-        PDF_RESULTS.lock().unwrap().insert(id.clone(), BTreeMap::new());
+        PDF_RESULTS
+            .lock()
+            .unwrap()
+            .insert(id.clone(), BTreeMap::new());
 
         // 同步渲染第 1 页
         let (png_path, w, h, media_token, thumb_token) =
@@ -829,7 +843,8 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
             id: id.clone(),
             name: file_name.clone(),
             path: png_path,
-            w, h,
+            w,
+            h,
             origin: "pdf".into(),
             added_at: now_ms(),
             media_token,
@@ -879,11 +894,13 @@ pub fn ingest_file(app: &AppHandle, path: &Path, origin: &str) -> Result<ImageIt
         let media_token = state.media.register(path.to_path_buf(), mime_for(path));
         let item = ImageItem {
             id: id.clone(),
-            name: path.file_name()
+            name: path
+                .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "未命名".into()),
             path: path.to_path_buf(),
-            w, h,
+            w,
+            h,
             origin: origin.into(),
             added_at: now_ms(),
             media_token,
