@@ -45,7 +45,7 @@ jobs:
   # gpu feature 在 mac 上编译通过、运行时无 Vulkan loader 自然降级为空列表。
   check-rust-macos:
     name: Rust 检查(macOS arm64 目标)
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 

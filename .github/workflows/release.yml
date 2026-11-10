@@ -60,7 +60,7 @@ jobs:
   # workflow_dispatch 手动触发用于 mac 移植调试:只出 artifact,不发 Release。
   build-macos:
     name: 构建 macOS dmg(Apple Silicon)
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
