@@ -219,6 +219,7 @@ mod tests {
             confidence: 1.0,
             rotation: 0,
             retried: false,
+            rec_in_w: 0, // 0.5.0 新增字段;合成行无识别输入,同引擎合成口径
             pts: [[0.0, 0.0], [100.0, 0.0], [100.0, 40.0], [0.0, 40.0]],
         });
         DecodedImage::rescale_result(&mut res, d.scale_x, d.scale_y);
