@@ -113,6 +113,8 @@ pub struct InitInfoDto {
     pub settings: crate::settings::Settings,
     pub engine: EngineStatusDto,
     pub version: String,
+    /// 推理引擎版本(build.rs 从 Cargo.lock 提取的实际解析版本)
+    pub engine_version: String,
     pub platform: String,
 }
 

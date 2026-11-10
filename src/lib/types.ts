@@ -161,6 +161,7 @@ export interface InitInfo {
   settings: Settings;
   engine: EngineStatus;
   version: string;
+  engineVersion: string;
   platform: string;
 }
 

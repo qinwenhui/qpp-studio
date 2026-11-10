@@ -21,6 +21,8 @@ export const app = $state({
   engineDevice: 'cpu',
   engineModelsDir: '',
   version: '',
+  /** 推理引擎(qppocr)版本,appInit 时随 version 一并带回 */
+  engineVersion: '',
   platform: 'windows',
 
   /** 当前文档名(图片/PDF 文件名):窗口标题 + mac 标题栏居中展示 */

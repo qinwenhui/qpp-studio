@@ -17,6 +17,7 @@ pub fn app_init(app: AppHandle, state: State<AppCtx>) -> InitInfoDto {
         settings: state.settings.read().unwrap().clone(),
         engine: state.engine.status(),
         version: app.package_info().version.to_string(),
+        engine_version: env!("QPPOCR_ENGINE_VERSION").into(),
         platform: std::env::consts::OS.into(),
     }
 }

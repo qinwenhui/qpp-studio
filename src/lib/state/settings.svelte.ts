@@ -33,6 +33,7 @@ export async function loadSettings() {
     const info = await api.appInit();
     applySettings(info.settings);
     app.version = info.version;
+    app.engineVersion = info.engineVersion;
     app.platform = info.platform;
     // 平台分支样式钩子(标题栏交通灯让位 / mac 材质下的半透明底色)
     document.documentElement.dataset.platform = info.platform;

@@ -418,7 +418,7 @@
       </div>
       <div class="about">
         <div class="row"><span>QPP Studio</span><span class="mono">v{app.version || '0.1.0'}</span></div>
-        <div class="row"><span>推理引擎</span><span class="mono">qppocr 引擎</span></div>
+        <div class="row"><span>推理引擎</span><span class="mono">qppocr v{app.engineVersion}</span></div>
         <div class="row"><span>平台</span><span class="mono">{app.platform}</span></div>
         <p class="note">本地推理,数据不出机器</p>
       </div>
